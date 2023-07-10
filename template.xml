@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE pluginRecords [
+<!ELEMENT pluginRecords ((update-site | disabled-update-site)*, plugin*)>
+<!ELEMENT update-site EMPTY>
+<!ELEMENT disabled-update-site EMPTY>
+<!ELEMENT plugin (platform*, category*, version?, previous-version*)>
+<!ELEMENT version (description?, dependency*, link*, author*)>
+<!ELEMENT previous-version EMPTY>
+<!ELEMENT description (#PCDATA)>
+<!ELEMENT dependency EMPTY>
+<!ELEMENT link (#PCDATA)>
+<!ELEMENT author (#PCDATA)>
+<!ELEMENT platform (#PCDATA)>
+<!ELEMENT category (#PCDATA)>
+<!ATTLIST update-site name CDATA #REQUIRED>
+<!ATTLIST update-site url CDATA #REQUIRED>
+<!ATTLIST update-site keep-url CDATA #IMPLIED>
+<!ATTLIST update-site official CDATA #IMPLIED>
+<!ATTLIST update-site ssh-host CDATA #IMPLIED>
+<!ATTLIST update-site upload-directory CDATA #IMPLIED>
+<!ATTLIST update-site description CDATA #IMPLIED>
+<!ATTLIST update-site maintainer CDATA #IMPLIED>
+<!ATTLIST update-site timestamp CDATA #REQUIRED>
+<!ATTLIST disabled-update-site name CDATA #REQUIRED>
+<!ATTLIST disabled-update-site url CDATA #REQUIRED>
+<!ATTLIST disabled-update-site keep-url CDATA #IMPLIED>
+<!ATTLIST disabled-update-site official CDATA #IMPLIED>
+<!ATTLIST disabled-update-site ssh-host CDATA #IMPLIED>
+<!ATTLIST disabled-update-site upload-directory CDATA #IMPLIED>
+<!ATTLIST disabled-update-site description CDATA #IMPLIED>
+<!ATTLIST disabled-update-site maintainer CDATA #IMPLIED>
+<!ATTLIST disabled-update-site timestamp CDATA #REQUIRED>
+<!ATTLIST plugin update-site CDATA #IMPLIED>
+<!ATTLIST plugin filename CDATA #REQUIRED>
+<!ATTLIST plugin executable CDATA #IMPLIED>
+<!ATTLIST dependency filename CDATA #REQUIRED>
+<!ATTLIST dependency timestamp CDATA #IMPLIED>
+<!ATTLIST dependency overrides CDATA #IMPLIED>
+<!ATTLIST version timestamp CDATA #REQUIRED>
+<!ATTLIST version checksum CDATA #REQUIRED>
+<!ATTLIST version filesize CDATA #REQUIRED>
+<!ATTLIST previous-version filename CDATA #IMPLIED>
+<!ATTLIST previous-version timestamp CDATA #REQUIRED>
+<!ATTLIST previous-version timestamp-obsolete CDATA #IMPLIED>
+<!ATTLIST previous-version checksum CDATA #REQUIRED>]>
+<pluginRecords>
+</pluginRecords>
