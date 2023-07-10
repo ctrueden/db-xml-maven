@@ -1,4 +1,7 @@
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional, List, Sequence
+from xml.etree import ElementTree as ET
 
 """
 PLAN:
@@ -209,12 +212,86 @@ class Dependency:
         return self.artifact.env
 
 
-class POM:
+class XML:
+
+    def __init__(self, source):
+        self.source = source
+        self.tree = ET.parse(source)
+        XML._strip_ns(self.tree.getroot())
+
+    def elements(self, path: str) -> List[ET.Element]:
+        return self.tree.findall(path)
+
+    def value(self, path: str) -> Optional[str]:
+        el = self.elements(path)
+        assert len(el) <= 1
+        return None if len(el) == 0 else el[0].text
+
+    @staticmethod
+    def _strip_ns(el: ET.Element) -> None:
+        """
+        Remove namespace prefixes from elements and attributes.
+        Credit: https://stackoverflow.com/a/32552776/1207769
+        """
+        if el.tag.startswith("{"):
+            el.tag = el.tag[el.tag.find("}")+1:]
+        for k in list(el.attrib.keys()):
+            if k.startswith("{"):
+                k2 = k[k.find("}")+1:]
+                el.attrib[k2] = el.attrib[k]
+                del el.attrib[k]
+        for child in el:
+            XML._strip_ns(child)
+
+
+class MavenPOM(XML):
     """
     Convenience wrapper around a Maven POM XML document.
     """
-    def __init__(self, xml: str):
-        self.xml = xml
+
+    @property
+    def groupId(self) -> Optional[str]:
+        return self.value("groupId") or self.value("parent/groupId")
+
+    @property
+    def artifactId(self) -> Optional[str]:
+        return self.value("artifactId")
+
+    @property
+    def version(self) -> Optional[str]:
+        return self.value("version") or self.value("parent/version")
+
+    @property
+    def description(self) -> str:
+        return self.value("description")
+
+    @property
+    def scmURL(self) -> Optional[str]:
+        return self.value("scm/url")
+
+    @property
+    def issuesURL(self) -> Optional[str]:
+        return self.value("issueManagement/url")
+
+    @property
+    def ciURL(self) -> Optional[str]:
+        return self.value("ciManagement/url")
+
+    @property
+    def developers(self) -> List[Dict[str, Any]]:
+        devs = []
+        for el in self.elements("developers/developer"):
+            dev: Dict[str, Any] = {}
+            for child in el:
+                if len(child) == 0:
+                    dev[child.tag] = child.text
+                else:
+                    if child.tag == 'properties':
+                        dev[child.tag] = {grand.tag: grand.text for grand in child}
+                    else:
+                        dev[child.tag] = [grand.text for grand in child]
+            devs.append(dev)
+        return devs
 
     def interpolate(self, env) -> "POM":
         """
@@ -223,11 +300,51 @@ class POM:
         # TODO: Decide where this function should actually live.
         raise RuntimeError("Unimplemented")
 
-    def description(self) -> str:
-        # maybe use <name> if no <description> available?
-        # What if no <name> is available? return None
-        # The description element of db.xml.gz is optional.
-        #return "3D Blob Segmentation plugin for Fiji."
-        raise RuntimeError("Unimplemented")
 
+class MavenMetadata(XML):
+
+    @property
+    def groupId(self) -> Optional[str]:
+        try:
+            return self.value("groupId")
+        except Exception:
+            return self.value("parent/groupId")
+
+    @property
+    def artifactId(self) -> Optional[str]:
+        return self.value("artifactId")
+
+    @property
+    def lastUpdated(self) -> Optional[int]:
+        result = self.value("versioning/lastUpdated")
+        return None if result is None else int(result)
+
+    @property
+    def latest(self) -> Optional[str]:
+        # WARNING: The <latest> value is often wrong, for reasons I don't know.
+        # However, the last <version> under <versions> has the correct value.
+        # Consider using lastVersion instead of latest.
+        return self.value("versioning/latest")
+
+    @property
+    def lastVersion(self) -> Optional[str]:
+        vs = self.elements("versioning/versions/version")
+        return None if len(vs) == 0 else vs[-1].text
+
+    @property
+    def release(self) -> Optional[str]:
+        return self.value("versioning/release")
+
+
+def ts2dt(ts: str) -> datetime:
+    """
+    Converts Maven-style timestamp strings into Python datetime objects.
+
+    Valid forms:
+    * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
+    * 20210702.144917 (seen in deployed SNAPSHOT filenames)
+    """
+    m = re.match("(\d{4})(\d\d)(\d\d)\.?(\d\d)(\d\d)(\d\d)", ts)
+    if not m: raise ValueError(f"Invalid timestamp: {ts}")
+    return datetime(*map(int, m.groups())) #noqa
 
