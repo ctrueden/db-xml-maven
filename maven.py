@@ -64,8 +64,7 @@ class FastResolver:
         self.env = env
 
     def resolve(self, artifact: "Artifact") -> Optional[Path]:
-        # FIXME
-        return None
+        raise RuntimeError("Unimplemented")
 
 
 class MvnResolver:
@@ -79,8 +78,7 @@ class MvnResolver:
         self.env = env
 
     def resolve(self, artifact: "Artifact") -> Optional[Path]:
-        # FIXME
-        return None
+        raise RuntimeError("Unimplemented")
 
 
 class Environment:
@@ -92,7 +90,7 @@ class Environment:
     """
 
     def __init__(self):
-        # FIXME
+        # FIXME - don't hardcode
         self.repositories = {
             "scijava.public": "https://maven.scijava.org/content/groups/public",
         }
@@ -226,7 +224,6 @@ class POM:
         raise RuntimeError("Unimplemented")
 
     def description(self) -> str:
-        # FIXME
         # maybe use <name> if no <description> available?
         # What if no <name> is available? return None
         # The description element of db.xml.gz is optional.
