@@ -53,6 +53,7 @@ This would be nice for performance for some scenarios: run on the same server th
 The main wrinkle is that snapshots are *all* timestamped on the remote; there is no copy of the newest snapshot artifacts with non-timestamped names.
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Sequence
@@ -61,17 +62,51 @@ from xml.etree import ElementTree as ET
 
 # TODO: resolvers extend common base interface?
 
+# What does "resolve" mean?
+# Just means getting the path to a local file *somewhere*.
+# So... the SimpleResolver will use requests to download from a remote repository via HTTPS.
+# The LocalNexusResolver will just look into the directories given.
 
-class FastResolver:
+class Resolver:
+    def __init__(self, env: "Environment"):
+        self.env = env
+
+    def resolve(self, artifact: "Artifact") -> Optional[Path]:
+        """
+        Get a file path to the artifact.
+        :param artifact: The artifact for which a path should be resolved.
+        :return: The resolved path, or None if the artifact cannot be resolved.
+        """
+        raise RuntimeError("Unimplemented")
+
+    def effective_pom(self, pom: "Artifact") -> "Artifact":
+        raise RuntimeError("Unimplemented")
+
+
+class SimpleResolver(Resolver):
     """
     A resolver that works by pure Python code.
     Low overhead, but less feature complete than mvn.
     """
     def __init__(self, env: "Environment"):
-        self.env = env
+        Resolver.__init__(self, env)
 
     def resolve(self, artifact: "Artifact") -> Optional[Path]:
         raise RuntimeError("Unimplemented")
+
+    def effective_pom(self, pom: "Artifact") -> "Artifact":
+        raise RuntimeError("Unimplemented")
+
+
+class LocalRepositoryResolver:
+    """
+    """
+    def __init__(self, env: "Environment", dirs: Sequence[Path]):
+        self.dirs = []
+        self.dirs.append(dirs)
+
+
+import subprocess
 
 
 class SysCallResolver:
@@ -81,31 +116,108 @@ class SysCallResolver:
     """
 
     # Random tips:
-    # * Can use help:effective-pom with -f flag pointing to local repo cache. ^_^
     # * The exec:exec echo trick also works with -f flag.
 
-    def __init__(self, env: "Environment"):
+    def __init__(self, env: "Environment", mvn_command: Path):
         self.env = env
+        self.mvn_command = mvn_command
 
     def resolve(self, artifact: "Artifact") -> Optional[Path]:
+        """
+        :param artifact:
+        :return:
+        """
+
+        # Check local repository storage for the artifact.
+        for local_repo in self.env.local_repos:
+            pass
         raise RuntimeError("Unimplemented")
+
+    def effective_pom(self, pom: "Artifact") -> "Artifact":
+        pom_path = self.resolve(pom)
+        self._mvn("help:effective-pom", "-f", pom_path)
+        raise RuntimeError("Unimplemented")
+
+    def _mvn(self, *args):
+        mvn_command_and_args = [self.mvn_command, "-B", "-T8"]
+
+        if self.env.local_repos:
+            # NB: Assume the first local_repo entry is the canonical one for mvn to use.
+            # FIXME: Need to distinguish between local paths that are *repo caches*
+            # versus those that are *Nexus storage directories*. We don't want mvn to
+            # write anything into Nexus storage directories by treating them as local repos caches.
+            mvn_command_and_args.append(f"-Dmaven.repo.local={self.env.local_repos[0]}")
+
+        return SysCallResolver._run(*mvn_command_and_args)
+
+    def _maven_repo_local(self) -> Optional[str]:
+        """Local repository cache directory override for -Dmaven.repo.local."""
+
+    def _remote_repositories(self) -> Optional[str]:
+        """
+        Repositories in the format id::[layout]::url, separated by comma.
+        Needed e.g. for mvn's dependency:get goal.
+        """
+        return (
+            ",".join(f"{name}::::{url}" for name, url in self.env.remote_repos.items())
+            if self.env.remote_repos
+            else None
+        )
+
+    @staticmethod
+    def _run(command, *args):
+        command_and_args = (command,) + args
+        #_logger.debug(f"Executing: {command_and_args}")
+        # FIXME: capture stdout and stderr separately.
+        # If exit code non-zero, raise exception with stdout+stderr contents.
+        # If exit code zero, return stdout only.
+        return subprocess.check_output(command_and_args, stderr=subprocess.STDOUT)
 
 
 class Environment:
     """
     Maven environment.
     * Local repo cache folder.
-    * Remote repositories list.
-    * Resolution mechanism.
+    * Local repository storage folders.
+    * Remote repository name:URL pairs.
+    * Artifact resolution mechanism.
     """
 
-    def __init__(self):
-        # FIXME - don't hardcode
-        self.repositories = {
-            "scijava.public": "https://maven.scijava.org/content/groups/public",
-        }
-        self.repo_cache = "/home/curtis/.m2/repository"
-        self.resolver = SysCallResolver(self)
+    def __init__(
+            self,
+            repo_cache: Optional[Path] = None,
+            local_repos: Optional[List[Path]] = None,
+            remote_repos: Optional[Dict[str, str]] = None,
+            resolver: Resolver = None,
+    ):
+        """
+        Create a Maven environment.
+
+        :param repo_cache:
+            Optional path to Maven local repository cache directory, i.e. a destination
+            of `mvn install`. Maven typically uses ~/.m2/repository by default.
+            This directory is treated as *read-write* by this library, e.g.
+            the resolve() function will store downloaded artifacts here.
+            If no local repository cache path is given, Maven defaults will be used
+            (M2_REPO environment variable, or ~/.m2/repository by default).
+        :param local_repos:
+            Optional list of Maven repository storage local paths to check for artifacts.
+            These are real Maven repositories, such as those managed by a Sonatype Nexus v2 instance,
+            i.e. ultimate destinations of `mvn deploy`, *not* local repository caches!
+            These directories are treated as *read-only* by this library.
+            If no local repository paths are given, none will be inferred.
+        :param remote_repos:
+            Optional dict of remote name:URL pairs, with each URL corresponding
+            to a remote Maven repository accessible via HTTP/HTTPS.
+            If no local repository paths are given, only Maven Central will be used.
+        :param resolver:
+            Optional mechanism to use for resolving local paths to artifacts.
+            By default, the SimpleResolver will be used.
+        """
+        self.repo_cache: Path = repo_cache or os.environ.get("M2_REPO", Path("~").expanduser() / "m2" / "repository")
+        self.local_repos: List[Path] = local_repos.copy() if local_repos else []
+        self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
+        self.resolver: Resolver = SysCallResolver(self, "mvn") # CTR FIXME use SimpleResolver once it is implemented. And don't hardcode relative `mvn` executable either!
 
     def project(self, groupId: str, artifactId: str):
         return Project(self, groupId, artifactId)
@@ -151,7 +263,7 @@ class Component:
         return Artifact(self, classifier, packaging)
 
     def pom(self) -> "Artifact":
-        return artifact(packaging="pom")
+        return self.artifact(packaging="pom")
 
     @property
     def env(self) -> Environment:
@@ -195,8 +307,23 @@ class Artifact:
 
     @property
     def path(self) -> Path:
-        #return self.path
-        raise RuntimeError("Unimplemented")
+        # Check Maven local repository cache first if available.
+        # Then check local Maven repository storage directories, if any.
+        bases = []
+        if self.env.repo_cache:
+            bases.append(self.env.repo_cache)
+        bases.extend(self.env.local_repos)
+        prefix = Path(*self.groupId.split("."), self.artifactId, self.version)
+        for base in bases:
+            dir = base / prefix
+            p = dir / self.filename()
+            # CTR FIXME: Be smarter than this when version is a SNAPSHOT,
+            # because local repo storage has timestamped filenames.
+            if p.exists():
+                return p
+
+        # Artifact was not found locally; need to invoke the resolver.
+        return self.env.resolver.resolve(self)
 
     def md5(self) -> str:
         #return "d378517ad2287c148f60327caca4956e966f6ba4"
