@@ -1,8 +1,3 @@
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Optional, List, Sequence
-from xml.etree import ElementTree as ET
-
 """
 PLAN:
 Steal XML and POM code from my other project.
@@ -58,11 +53,20 @@ This would be nice for performance for some scenarios: run on the same server th
 The main wrinkle is that snapshots are *all* timestamped on the remote; there is no copy of the newest snapshot artifacts with non-timestamped names.
 """
 
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional, List, Sequence
+from xml.etree import ElementTree as ET
+
 
 # TODO: resolvers extend common base interface?
 
 
 class FastResolver:
+    """
+    A resolver that works by pure Python code.
+    Low overhead, but less feature complete than mvn.
+    """
     def __init__(self, env: "Environment"):
         self.env = env
 
@@ -70,12 +74,15 @@ class FastResolver:
         raise RuntimeError("Unimplemented")
 
 
-class MvnResolver:
+class SysCallResolver:
     """
-    Random tips:
-    * Can use help:effective-pom with -f flag pointing to local repo cache. ^_^
-    * The exec:exec echo trick also works with -f flag.
+    A resolver that works by shelling out to mvn.
+    Requires Maven to be installed, obviously.
     """
+
+    # Random tips:
+    # * Can use help:effective-pom with -f flag pointing to local repo cache. ^_^
+    # * The exec:exec echo trick also works with -f flag.
 
     def __init__(self, env: "Environment"):
         self.env = env
@@ -98,7 +105,7 @@ class Environment:
             "scijava.public": "https://maven.scijava.org/content/groups/public",
         }
         self.repo_cache = "/home/curtis/.m2/repository"
-        self.resolver = MvnResolver(self)
+        self.resolver = SysCallResolver(self)
 
     def project(self, groupId: str, artifactId: str):
         return Project(self, groupId, artifactId)
@@ -140,10 +147,10 @@ class Component:
         self.project = project
         self.version = version
 
-    def artifact(self, classifier: str = "", packaging: str = "jar"):
+    def artifact(self, classifier: str = "", packaging: str = "jar") -> "Artifact":
         return Artifact(self, classifier, packaging)
 
-    def pom(self) -> POM:
+    def pom(self) -> "Artifact":
         return artifact(packaging="pom")
 
     @property
@@ -175,6 +182,18 @@ class Artifact:
         return self.component.env
 
     @property
+    def groupId(self) -> str:
+        return self.component.groupId
+
+    @property
+    def artifactId(self) -> str:
+        return self.component.artifactId
+
+    @property
+    def version(self) -> str:
+        return self.component.version
+
+    @property
     def path(self) -> Path:
         #return self.path
         raise RuntimeError("Unimplemented")
@@ -190,6 +209,10 @@ class Artifact:
     def timestamp(self) -> str:
         #return "20210915210749"
         raise RuntimeError("Unimplemented")
+
+    def filename(self) -> str:
+        classifier_suffix = f"-{self.classifier}" if self.classifier else ""
+        return f"{self.artifactId}-{self.version}{classifier_suffix}.{self.packaging}"
 
     def filesize(self) -> int:
         #return 12893
@@ -243,7 +266,6 @@ class XML:
         for child in el:
             XML._strip_ns(child)
 
-
 class MavenPOM(XML):
     """
     Convenience wrapper around a Maven POM XML document.
@@ -262,7 +284,7 @@ class MavenPOM(XML):
         return self.value("version") or self.value("parent/version")
 
     @property
-    def description(self) -> str:
+    def description(self) -> Optional[str]:
         return self.value("description")
 
     @property
@@ -336,6 +358,8 @@ class MavenMetadata(XML):
         return self.value("versioning/release")
 
 
+# -- Functions --
+
 def ts2dt(ts: str) -> datetime:
     """
     Converts Maven-style timestamp strings into Python datetime objects.
@@ -347,4 +371,3 @@ def ts2dt(ts: str) -> datetime:
     m = re.match("(\d{4})(\d\d)(\d\d)\.?(\d\d)(\d\d)(\d\d)", ts)
     if not m: raise ValueError(f"Invalid timestamp: {ts}")
     return datetime(*map(int, m.groups())) #noqa
-
