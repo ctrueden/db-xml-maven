@@ -97,6 +97,7 @@ class SimpleResolver(Resolver):
 
     def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
         pom = pom_artifact.component.pom()
+        # CTR START HERE do the interpolation ourselves!
         raise RuntimeError("Unimplemented")
 
 
@@ -110,42 +111,41 @@ class SysCallResolver(Resolver):
         self.mvn_command = mvn_command
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        args = (
+        assert artifact.env.repo_cache
+        args = [
+            f"-Dmaven.repo.local={artifact.env.repo_cache}"
             f"-DgroupId={artifact.groupId}",
             f"-DartifactId={artifact.artifactId}",
             f"-Dversion={artifact.version}",
             f"-Dpackaging={artifact.packaging}",
-        )
+        ]
         if artifact.classifier:
             args.append(f"-Dclassifier={artifact.classifier}")
-        if self.env.remote_repos:
-            remote_repos = ",".join(f"{name}::::{url}" for name, url in self.env.remote_repos.items())
+        if artifact.env.remote_repos:
+            remote_repos = ",".join(f"{name}::::{url}" for name, url in artifact.env.remote_repos.items())
             args.append(f"-DremoteRepositories={remote_repos}")
 
         self._mvn("dependency:get", *args)
 
         # The file should now exist in the local repo cache.
         # CTR FIXME eliminate duplicate logic with Artifact.path method.
-        if not self.env.repo_cache:
-            # CTR FIXME THIS IS DUMB
-            return None
-        prefix = Path(*self.groupId.split("."), self.artifactId, self.version)
-        cached_file = self.env.repo_cache / prefix / self.filename
+        prefix = Path(*artifact.groupId.split("."), artifact.artifactId, artifact.version)
+        cached_file = artifact.env.repo_cache / prefix / artifact.filename
         assert cached_file.exists()
         return cached_file
 
     def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
-        output = self._mvn("help:effective-pom", "-f", pom_artifact.path)
+        assert pom_artifact.env.repo_cache
+        output = self._mvn(
+            "help:effective-pom",
+            "-f", pom_artifact.path,
+            f"-Dmaven.repo.local={pom_artifact.env.repo_cache}"
+        )
         # CTR START HERE parse output
         raise RuntimeError("Unimplemented")
 
     def _mvn(self, *args):
-        mvn_command_and_args = [self.mvn_command, "-B", "-T8"]
-
-        if self.env.repo_cache:
-            mvn_command_and_args.append(f"-Dmaven.repo.local={self.env.repo_cache}")
-
-        return SysCallResolver._run(*mvn_command_and_args)
+        return SysCallResolver._run(self.mvn_command, "-B", "-T8", *args)
 
     @staticmethod
     def _run(command, *args):
