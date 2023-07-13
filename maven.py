@@ -67,6 +67,30 @@ import requests
 import io
 
 
+# -- Constants --
+
+DEFAULT_CLASSIFIER = ""
+DEFAULT_PACKAGING = "jar"
+DEFAULT_SCOPE = "compile"
+
+
+# -- Functions --
+def ts2dt(ts: str) -> datetime:
+    """
+    Converts Maven-style timestamp strings into Python datetime objects.
+
+    Valid forms:
+    * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
+    * 20210702.144917 (seen in deployed SNAPSHOT filenames)
+    """
+    m = re.match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
+    if not m:
+        raise ValueError(f"Invalid timestamp: {ts}")
+    return datetime(*map(int, m.groups()))  # noqa
+
+
+# -- Classes --
+
 class Resolver:
     """
     Logic for doing non-trivial Maven-related things, including:
@@ -147,7 +171,7 @@ class SysCallResolver(Resolver):
                 snap = i
                 break
         assert snip is not None and snap is not None
-        return POM("\n".join(lines[snip:snap + 1]))
+        return POM("\n".join(lines[snip:snap + 1]), pom_artifact.env)
 
     def _mvn(self, *args) -> str:
         return SysCallResolver._run(self.mvn_command, "-B", "-T8", *args)
@@ -231,6 +255,10 @@ class Project:
         self.groupId = groupId
         self.artifactId = artifactId
 
+    def __eq__(self, other):
+        return self.groupId == other.groupId \
+            and self.artifactId == other.artifactId
+
     @property
     def path_prefix(self) -> Path:
         """
@@ -239,7 +267,7 @@ class Project:
         """
         return Path(*self.groupId.split("."), self.artifactId)
 
-    def component(self, version: str) -> "Component":
+    def at_version(self, version: str) -> "Component":
         return Component(self, version)
 
     def metadata(self):
@@ -249,16 +277,43 @@ class Project:
         #return Metadata(metadata_path)
         raise RuntimeError("Unimplemented")
 
-    def release(self, update: bool = True) -> str:
+    def update(self):
+        # CTR FIXME: Update metadata from remote sources!
+        pass
+
+    def release(self) -> str:
         """
         Get the newest release version of this project.
+        This is the equivalent of Maven's RELEASE version.
         """
         raise RuntimeError("Unimplemented")
 
-    def latest(self, update: bool = True) -> str:
+    def latest(self) -> str:
         """
         Get the latest SNAPSHOT version of this project.
+        This is the equivalent of Maven's LATEST version.
         """
+        raise RuntimeError("Unimplemented")
+
+    def versions(self, releases: bool = True, snapshots: bool = False, locked: bool = False) -> List["Component"]:
+        """
+        Get the list of all known versions of this project.
+
+        :param releases:
+            If True, include release versions (those not ending in -SNAPSHOT) in the results.
+        :param snapshots:
+            If True, include snapshot versions (those ending in -SNAPSHOT) in the results.
+        :param locked:
+            If True, returned snapshot versions will include the timestamp or "lock" flavor of the version strings;
+            For example: 2.94.3-20230706.150124-1 rather than 2.94.3-SNAPSHOT.
+            As such, there may be more entries returned than when this flag is False.
+        :return: List of Component objects, each of which represents a known version.
+        """
+        # CTR FIXME: Think about whether multiple timestamped snapshots at the same snapshot version should be
+        # one Component, or multiple Components. because we could just have a list of timestamps in the Component
+        # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptions regarding how Components and Artifacts relate.
+        # You can only "sort of" have an artifact for a SNAPSHOT without a timestamp lock... it's always timestamped on the remote side,
+        # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
         raise RuntimeError("Unimplemented")
 
 
@@ -271,6 +326,10 @@ class Component:
     def __init__(self, project: Project, version: str):
         self.project = project
         self.version = version
+
+    def __eq__(self, other):
+        return self.project == other.project \
+            and self.version == other.version
 
     @property
     def env(self) -> Environment:
@@ -292,14 +351,14 @@ class Component:
         """
         return self.project.path_prefix / self.version
 
-    def artifact(self, classifier: str = "", packaging: str = "jar") -> "Artifact":
+    def artifact(self, classifier: str = DEFAULT_CLASSIFIER, packaging: str = DEFAULT_PACKAGING) -> "Artifact":
         return Artifact(self, classifier, packaging)
 
     def pom(self) -> "POM":
         """
         Get a data structure with the contents of the POM.
         """
-        return POM(self.artifact(packaging="pom").path)
+        return POM(self.artifact(packaging="pom").path, self.env)
 
 
 class Artifact:
@@ -308,10 +367,15 @@ class Artifact:
     One file per artifact.
     """
 
-    def __init__(self, component: Component, classifier: str = "", packaging: str = "jar"):
+    def __init__(self, component: Component, classifier: str = DEFAULT_CLASSIFIER, packaging: str = DEFAULT_PACKAGING):
         self.component = component
         self.classifier = classifier
         self.packaging = packaging
+
+    def __eq__(self, other):
+        return self.component == other.component \
+            and self.classifier == other.classifier \
+            and self.packaging == other.packaging
 
     @property
     def env(self) -> Environment:
@@ -395,8 +459,13 @@ class Dependency:
     This is an Artifact with scope, optional flag, and exclusions list.
     """
 
-    def __init__(self, artifact: Artifact, scope: str = "compile", optional: bool = False,
-                 exclusions: Sequence[Project] = None):
+    def __init__(
+            self,
+            artifact: Artifact,
+            scope: str = DEFAULT_SCOPE,
+            optional: bool = False,
+            exclusions: Sequence[Project] = None
+    ):
         self.artifact = artifact
         self.scope = scope
         self.optional = optional
@@ -409,9 +478,10 @@ class Dependency:
 
 class XML:
 
-    def __init__(self, source):
+    def __init__(self, source, env: Optional[Environment] = None):
         self.source = source
-        self.tree = ElementTree.parse(source)
+        self.env: Environment = env or Environment()
+        self.tree: ElementTree.ElementTree = ElementTree.parse(source)
         XML._strip_ns(self.tree.getroot())
 
     def elements(self, path: str) -> List[ElementTree.Element]:
@@ -488,6 +558,29 @@ class POM(XML):
             devs.append(dev)
         return devs
 
+    def dependencies(self) -> List[Dependency]:
+        return [
+            self._dependency(el)
+            for el in self.elements("dependencies/dependency")
+        ]
+
+    def _dependency(self, el: ElementTree.Element) -> Dependency:
+        groupId = el.findtext("groupId")
+        artifactId = el.findtext("artifactId")
+        version = el.findtext("version")
+        assert groupId and artifactId and version
+        classifier = el.findtext("classifier") or DEFAULT_CLASSIFIER
+        packaging = el.findtext("type") or DEFAULT_PACKAGING
+        scope = el.findtext("scope") or DEFAULT_SCOPE
+        optional = el.findtext("optional") == "true" or False
+        exclusions = [
+            self.env.project(ex.findtext("groupId"), ex.findtext("artifactId"))
+            for ex in el.findall("exclusions/exclusion")
+        ]
+        project = self.env.project(groupId, artifactId)
+        artifact = project.at_version(version).artifact(classifier, packaging)
+        return Dependency(artifact, scope, optional, exclusions)
+
 
 class Metadata(XML):
     """
@@ -522,19 +615,3 @@ class Metadata(XML):
     @property
     def release(self) -> Optional[str]:
         return self.value("versioning/release")
-
-
-# -- Functions --
-
-def ts2dt(ts: str) -> datetime:
-    """
-    Converts Maven-style timestamp strings into Python datetime objects.
-
-    Valid forms:
-    * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
-    * 20210702.144917 (seen in deployed SNAPSHOT filenames)
-    """
-    m = re.match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
-    if not m:
-        raise ValueError(f"Invalid timestamp: {ts}")
-    return datetime(*map(int, m.groups()))  # noqa
