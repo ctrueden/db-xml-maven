@@ -136,8 +136,12 @@ class SysCallResolver(Resolver):
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
         assert artifact.env.repo_cache
+        assert artifact.groupId
+        assert artifact.artifactId
+        assert artifact.version
+        assert artifact.packaging
         args = [
-            f"-Dmaven.repo.local={artifact.env.repo_cache}"
+            f"-Dmaven.repo.local={artifact.env.repo_cache}",
             f"-DgroupId={artifact.groupId}",
             f"-DartifactId={artifact.artifactId}",
             f"-Dversion={artifact.version}",
@@ -259,6 +263,9 @@ class Project:
         return self.groupId == other.groupId \
             and self.artifactId == other.artifactId
 
+    def __hash__(self):
+        return hash((self.groupId, self.artifactId))
+
     @property
     def path_prefix(self) -> Path:
         """
@@ -331,6 +338,9 @@ class Component:
         return self.project == other.project \
             and self.version == other.version
 
+    def __hash__(self):
+        return hash((self.project, self.version))
+
     @property
     def env(self) -> Environment:
         return self.project.env
@@ -358,7 +368,9 @@ class Component:
         """
         Get a data structure with the contents of the POM.
         """
-        return POM(self.artifact(packaging="pom").path, self.env)
+        pom_artifact = self.artifact(packaging="pom")
+        return POM(pom_artifact.path, self.env)
+
 
 
 class Artifact:
@@ -376,6 +388,9 @@ class Artifact:
         return self.component == other.component \
             and self.classifier == other.classifier \
             and self.packaging == other.packaging
+
+    def __hash__(self):
+        return hash((self.component, self.classifier, self.packaging))
 
     @property
     def env(self) -> Environment:

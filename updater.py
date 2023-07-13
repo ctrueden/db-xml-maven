@@ -2,12 +2,11 @@
 
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Union, Optional
 
 from lxml import etree
 
-import maven
-from maven import Artifact, Component, Dependency
+from maven import Artifact, Component
 
 
 # -- Type aliases --
@@ -29,7 +28,7 @@ def timestamp(path: Path) -> str:
     return dt.strftime("%Y%m%d%H%M%S")
 
 
-def deduce_platform(classifier: str) -> str:
+def deduce_platform(classifier: str) -> Optional[str]:
     if "mac" in classifier:
         return "macosx"
 
@@ -52,12 +51,6 @@ def deduce_platform(classifier: str) -> str:
     return platform
 
 
-def dependencies(artifact: Artifact) -> List[Dependency]:
-    pom = artifact.component.pom()
-    for dependency in pom.dependencies(artifact.env):
-        pass
-
-
 # -- Classes --
 
 class FilesCollection:
@@ -75,24 +68,25 @@ class FilesCollection:
     #
 
     def __init__(self):
-        self.components: Set[Component] = {}
-        self.artifacts: Set[Artifact] = {}
-        self.current: Set[Artifact] = {}
+        self.components: Set[Component] = set()
+        self.artifacts: Set[Artifact] = set()
+        self.current: Set[Artifact] = set()
 
     def add_artifact(self, artifact: Artifact, current_version: bool = True):
+        print(f"add_artifact({artifact.groupId}:{artifact.artifactId}:{artifact.version}:{artifact.classifier}:{artifact.packaging}, {current_version,})")
         # Register artifact.
         if not self._register_artifact(artifact, current_version):
             # Artifact already processed.
             return
 
         # Register dependencies.
-        self._register_dependencies(artifact.component)
+        self._register_dependencies(artifact, current_version)
 
         # Register previous versions of the artifact.
         # CTR FIXME: two things:
         # 1. This enumerates *all* versions of the artifact, not only *previous* ones. Might want a version comparator here.
         # 2. There is no guarantee that this particular GACP exists at every previous version. Use a try/except when resolving the path, either here or during XML generation.
-        for component in artifact.project.versions():
+        for component in artifact.component.project.versions():
             previous_artifact = component.artifact(classifier=artifact.classifier, packaging=artifact.packaging)
             self.add_artifact(previous_artifact, False)
 
@@ -101,7 +95,9 @@ class FilesCollection:
             # Artifact already processed.
             return False
         self.artifacts.add(artifact)
+        print(f"Registered {artifact.groupId}:{artifact.artifactId}:{artifact.version}!")
         if current_version:
+            print(f"--> And it is a current version!")
             self.current.add(artifact)
         return True
 
@@ -110,12 +106,13 @@ class FilesCollection:
             # This component's dependencies have already been processed.
             return
         self.components.add(artifact.component)
+        print(f"Register dependencies for {artifact.groupId}:{artifact.artifactId}:{artifact.version}...")
         pom = artifact.component.pom()
         for dep in pom.dependencies():
             if dep.scope in ("compile", "runtime"):
                 self._register_artifact(dep.artifact, current_version)
 
-    def generate_xml(self, template_path: Path) -> str:
+    def generate_xml(self, template_path: Union[Path, str]) -> str:
         with open(template_path) as f:
             tree = etree.parse(f)
 
@@ -130,12 +127,13 @@ class FilesCollection:
 
         # Now that we have our list of plugins, we can generate the corresponding XML elements.
         # CTR FIXME: sort by artifactId? Or by groupId/artifactId? Or by something else?
-        for plugin, artifacts in plugins.items():
-            self._populate_plugin(plugin, artifacts)
+        for _, artifacts in plugins.items():
+            # CTR FIXME: Really? I don't need the GACP tuple at all? Hmm...
+            self._populate_plugin(tree, artifacts)
 
-        return etree.tostring(self.tree, xml_declaration=True, encoding="utf-8").decode()
+        return etree.tostring(tree, xml_declaration=True, encoding="utf-8").decode()
 
-    def _populate_plugin(self, plugin: Plugin, artifacts: List[Artifact]) -> None:
+    def _populate_plugin(self, tree, artifacts: List[Artifact]) -> None:
         # Discern which version is the current one.
         current_artifacts = [a for a in artifacts if a in self.current]
         assert len(current_artifacts) <= 1
@@ -143,7 +141,7 @@ class FilesCollection:
         default_artifact = current_artifact or artifacts[0]
 
         # <plugin> tag
-        plugin = etree.SubElement(self.tree.getroot(), "plugin")
+        plugin = etree.SubElement(tree.getroot(), "plugin")
         plugin.set("filename", default_artifact.filename)
 
         # <platform> tag
@@ -162,7 +160,7 @@ class FilesCollection:
 
             # <description> tag
             pom = current_artifact.component.pom()
-            desc = pom.description()
+            desc = pom.description
             if desc:
                 description = etree.SubElement(version, "description")
                 description.text = desc

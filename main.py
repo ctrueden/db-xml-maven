@@ -1,21 +1,29 @@
 from updater import FilesCollection
 import maven
 
+from pathlib import Path
+
 # Define the Maven artifact.
 remote_repos = {
     "scijava.public": "https://maven.scijava.org/content/groups/public"
 }
-env = maven.Environment(remote_repos=remote_repos, resolver=maven.SysCallResolver("mvn"))
+print("Creating Maven environment...")
+env = maven.Environment(remote_repos=remote_repos, resolver=maven.SysCallResolver(Path("mvn")))
 project = env.project("net.imagej", "imagej")
-component = project.component("2.14.0")
+component = project.at_version("2.14.0")
 artifact = component.artifact()
 
+print("Initializing FilesCollection...")
 # Read in the starting template.
 fc = FilesCollection()
-fc.load("template.xml")
 
+print(f"Adding artifact {artifact}...")
 # Add the plugin entry.
-fc.add_plugin(artifact)
+fc.add_artifact(artifact)
 
+print("Generating resultant XML...")
 # Write out the result.
-fc.save("db-{g}-{a}-{v}.xml")
+xml = fc.generate_xml("template.xml")
+print(xml)
+#with open(f"db-{g}-{a}-{v}.xml", "w") as f:
+#    f.write(xml)
