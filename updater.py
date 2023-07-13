@@ -12,8 +12,8 @@ class FilesCollection:
 
     def __init__(self):
         self.tree = None
-        resolver = SysCallResolver(self, "mvn") # CTR FIXME use SimpleResolver once it is implemented. And don't hardcode relative `mvn` executable either!
-        self.env = maven.Environment()
+        # CTR FIXME use SimpleResolver once it is implemented. And don't hardcode relative `mvn` executable either!
+        self.env = maven.Environment(resolver=maven.SysCallResolver("mvn"))
 
     def load(self, path):
         with open(path) as f:

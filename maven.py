@@ -128,11 +128,8 @@ class SysCallResolver(Resolver):
         self._mvn("dependency:get", *args)
 
         # The file should now exist in the local repo cache.
-        # CTR FIXME eliminate duplicate logic with Artifact.path method.
-        prefix = Path(*artifact.groupId.split("."), artifact.artifactId, artifact.version)
-        cached_file = artifact.env.repo_cache / prefix / artifact.filename
-        assert cached_file.exists()
-        return cached_file
+        assert artifact.cached_path and artifact.cached_path.exists()
+        return artifact.cached_path
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
         assert pom_artifact.env.repo_cache
