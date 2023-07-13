@@ -97,7 +97,7 @@ class SimpleResolver(Resolver):
 
     def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
         pom = pom_artifact.component.pom()
-        # CTR START HERE do the interpolation ourselves!
+        # CTR FIXME do the interpolation ourselves!
         raise RuntimeError("Unimplemented")
 
 
@@ -134,27 +134,44 @@ class SysCallResolver(Resolver):
         assert cached_file.exists()
         return cached_file
 
-    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
+    def interpolate(self, pom_artifact: "Artifact") -> "POM":
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
             "-f", pom_artifact.path,
             f"-Dmaven.repo.local={pom_artifact.env.repo_cache}"
         )
-        # CTR START HERE parse output
-        raise RuntimeError("Unimplemented")
+        lines = output.splitlines()
+        snip = snap = None
+        for i, line in enumerate(lines):
+            if snip is None and line.startswith("<?xml"):
+                snip = i
+            elif line == "</project>":
+                snap = i
+                break
+        assert snip is not None and snap is not None
+        return POM("\n".join(lines[snip:snap + 1]))
 
-    def _mvn(self, *args):
+    def _mvn(self, *args) -> str:
         return SysCallResolver._run(self.mvn_command, "-B", "-T8", *args)
 
     @staticmethod
-    def _run(command, *args):
+    def _run(command, *args) -> str:
         command_and_args = (command,) + args
         # _logger.debug(f"Executing: {command_and_args}")
-        # FIXME: capture stdout and stderr separately.
-        # If exit code non-zero, raise exception with stdout+stderr contents.
-        # If exit code zero, return stdout only.
-        return subprocess.check_output(command_and_args, stderr=subprocess.STDOUT)
+        result = subprocess.run(command_and_args, capture_output=True)
+        if result.returncode == 0:
+            return result.stdout.decode()
+
+        error_message = (
+            f"Command failed with exit code {result.returncode}:\n"
+            f"{command_and_args}"
+        )
+        if result.stdout:
+            error_message += f"\n\n[stdout]\n{result.stdout.decode()}"
+        if result.stderr:
+            error_message += f"\n\n[stderr]\n{result.stderr.decode()}"
+        raise RuntimeError(error_message)
 
 
 class Environment:
@@ -217,14 +234,21 @@ class Project:
         self.groupId = groupId
         self.artifactId = artifactId
 
+    @property
+    def path_prefix(self) -> Path:
+        """
+        Relative directory where artifacts of this project are organized.
+        E.g. org.jruby:jruby-core -> org/jruby/jruby-core
+        """
+        return Path(*self.groupId.split("."), self.artifactId)
+
     def component(self, version: str) -> "Component":
         return Component(self, version)
 
     def metadata(self):
-        prefix = Path(*self.groupId.split("."), self.artifactId)
         # CTR FIXME: track down the right maven-metadata-foo.xml amongst
         # repo_cache, local_repos, and downloading it as needed.
-        #metadata_path = self.env.repo_cache / prefix / "maven-metadata.xml"
+        #metadata_path = self.env.repo_cache / self.path_prefix / "maven-metadata.xml"
         #return Metadata(metadata_path)
         raise RuntimeError("Unimplemented")
 
@@ -251,12 +275,6 @@ class Component:
         self.project = project
         self.version = version
 
-    def artifact(self, classifier: str = "", packaging: str = "jar") -> "Artifact":
-        return Artifact(self, classifier, packaging)
-
-    def pom(self) -> "POM":
-        return POM(self.artifact(packaging="pom").path)
-
     @property
     def env(self) -> Environment:
         return self.project.env
@@ -268,6 +286,23 @@ class Component:
     @property
     def artifactId(self) -> str:
         return self.project.artifactId
+
+    @property
+    def path_prefix(self) -> Path:
+        """
+        Relative directory where artifacts of this component are organized.
+        E.g. org.jruby:jruby-core:9.3.3.0 -> org/jruby/jruby-core/9.3.3.0
+        """
+        return self.project.path_prefix / self.version
+
+    def artifact(self, classifier: str = "", packaging: str = "jar") -> "Artifact":
+        return Artifact(self, classifier, packaging)
+
+    def pom(self) -> "POM":
+        """
+        Get a data structure with the contents of the POM.
+        """
+        return POM(self.artifact(packaging="pom").path)
 
 
 class Artifact:
@@ -298,20 +333,48 @@ class Artifact:
         return self.component.version
 
     @property
+    def filename(self) -> str:
+        """
+        Filename portion of the artifact path. E.g.:
+        - g=org.python a=jython v=2.7.0 -> jython-2.7.0.jar
+        - g=org.lwjgl a=lwjgl v=3.3.1 c=natives-linux -> lwjgl-3.3.1-natives-linux.jar
+        - g=org.scijava a=scijava-common v=2.94.2 p=pom -> scijava-common-2.94.2.pom
+        """
+        classifier_suffix = f"-{self.classifier}" if self.classifier else ""
+        return f"{self.artifactId}-{self.version}{classifier_suffix}.{self.packaging}"
+
+    @property
+    def cached_path(self) -> Optional[Path]:
+        """
+        Path to the artifact in the linked environment's local repository cache.
+        Might not actually exist! This just returns where it *would be* if present.
+        """
+        return (
+            self.env.repo_cache / self.component.path_prefix / self.filename
+            if self.env.repo_cache
+            else None
+        )
+
+    @property
     def path(self) -> Path:
-        prefix = Path(*self.groupId.split("."), self.artifactId, self.version)
+        """
+        Resolves a local path to the artifact, downloading it as needed:
+
+        1. If present in the linked local repository cache, use that path.
+        2. Else if present in a linked locally available repository storage directory, use that path.
+        3. Otherwise, invoke the environment's resolver to download it.
+        """
 
         # Check Maven local repository cache first if available.
-        if self.env.repo_cache:
-            cached_file = self.env.repo_cache / prefix / self.filename
-            if cached_file.exists():
-                return cached_file
+        cached_file = self.cached_path
+        if cached_file and cached_file.exists():
+            return cached_file
 
-        # Check locally available Maven repository storage directories, if any.
+        # Check any locally available Maven repository storage directories.
         for base in self.env.local_repos:
             # CTR FIXME: Be smarter than this when version is a SNAPSHOT,
             # because local repo storage has timestamped SNAPSHOT filenames.
-            p = base / prefix / self.filename
+            p = base / self.component.path_prefix / self.filename
             if p.exists():
                 return p
 
@@ -323,11 +386,6 @@ class Artifact:
 
     def sha1(self) -> str:
         return self._checksum("sha1", sha1)
-
-    @property
-    def filename(self) -> str:
-        classifier_suffix = f"-{self.classifier}" if self.classifier else ""
-        return f"{self.artifactId}-{self.version}{classifier_suffix}.{self.packaging}"
 
     def _checksum(self, suffix, func):
         p = self.path
