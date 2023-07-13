@@ -54,32 +54,35 @@ The main wrinkle is that snapshots are *all* timestamped on the remote; there is
 """
 
 import os
+import re
+import subprocess
 from datetime import datetime
+from hashlib import md5, sha1
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Sequence
-from xml.etree import ElementTree as ET
+from typing import Any, Dict, Optional, List, Sequence, Tuple
+from xml.etree import ElementTree
 
+import requests
 
-# TODO: resolvers extend common base interface?
+import io
 
-# What does "resolve" mean?
-# Just means getting the path to a local file *somewhere*.
-# So... the SimpleResolver will use requests to download from a remote repository via HTTPS.
-# The LocalNexusResolver will just look into the directories given.
 
 class Resolver:
-    def __init__(self, env: "Environment"):
-        self.env = env
+    """
+    Logic for doing non-trivial Maven-related things, including:
+    * downloading and caching an artifact from a remote repository; and
+    * interpolating a POM to create a complete, flat version with profiles applied.
+    """
 
-    def resolve(self, artifact: "Artifact") -> Optional[Path]:
+    def download(self, artifact: "Artifact") -> Optional[Path]:
         """
-        Get a file path to the artifact.
-        :param artifact: The artifact for which a path should be resolved.
-        :return: The resolved path, or None if the artifact cannot be resolved.
+        Download an artifact file from a remote repository.
+        :param artifact: The artifact for which a local path should be resolved.
+        :return: Local path to the saved artifact, or None if the artifact cannot be resolved.
         """
         raise RuntimeError("Unimplemented")
 
-    def effective_pom(self, pom: "Artifact") -> "Artifact":
+    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
         raise RuntimeError("Unimplemented")
 
 
@@ -88,86 +91,66 @@ class SimpleResolver(Resolver):
     A resolver that works by pure Python code.
     Low overhead, but less feature complete than mvn.
     """
-    def __init__(self, env: "Environment"):
-        Resolver.__init__(self, env)
 
-    def resolve(self, artifact: "Artifact") -> Optional[Path]:
+    def download(self, artifact: "Artifact") -> Optional[Path]:
         raise RuntimeError("Unimplemented")
 
-    def effective_pom(self, pom: "Artifact") -> "Artifact":
+    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
+        pom = pom_artifact.component.pom()
         raise RuntimeError("Unimplemented")
 
 
-class LocalRepositoryResolver:
-    """
-    """
-    def __init__(self, env: "Environment", dirs: Sequence[Path]):
-        self.dirs = []
-        self.dirs.append(dirs)
-
-
-import subprocess
-
-
-class SysCallResolver:
+class SysCallResolver(Resolver):
     """
     A resolver that works by shelling out to mvn.
-    Requires Maven to be installed, obviously.
+    Requires Maven to be installed.
     """
 
-    # Random tips:
-    # * The exec:exec echo trick also works with -f flag.
-
-    def __init__(self, env: "Environment", mvn_command: Path):
-        self.env = env
+    def __init__(self, mvn_command: Path):
         self.mvn_command = mvn_command
 
-    def resolve(self, artifact: "Artifact") -> Optional[Path]:
-        """
-        :param artifact:
-        :return:
-        """
+    def download(self, artifact: "Artifact") -> Optional[Path]:
+        args = (
+            f"-DgroupId={artifact.groupId}",
+            f"-DartifactId={artifact.artifactId}",
+            f"-Dversion={artifact.version}",
+            f"-Dpackaging={artifact.packaging}",
+        )
+        if artifact.classifier:
+            args.append(f"-Dclassifier={artifact.classifier}")
+        if self.env.remote_repos:
+            remote_repos = ",".join(f"{name}::::{url}" for name, url in self.env.remote_repos.items())
+            args.append(f"-DremoteRepositories={remote_repos}")
 
-        # Check local repository storage for the artifact.
-        for local_repo in self.env.local_repos:
-            pass
-        raise RuntimeError("Unimplemented")
+        self._mvn("dependency:get", *args)
 
-    def effective_pom(self, pom: "Artifact") -> "Artifact":
-        pom_path = self.resolve(pom)
-        self._mvn("help:effective-pom", "-f", pom_path)
+        # The file should now exist in the local repo cache.
+        # CTR FIXME eliminate duplicate logic with Artifact.path method.
+        if not self.env.repo_cache:
+            # CTR FIXME THIS IS DUMB
+            return None
+        prefix = Path(*self.groupId.split("."), self.artifactId, self.version)
+        cached_file = self.env.repo_cache / prefix / self.filename
+        assert cached_file.exists()
+        return cached_file
+
+    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
+        output = self._mvn("help:effective-pom", "-f", pom_artifact.path)
+        # CTR START HERE parse output
         raise RuntimeError("Unimplemented")
 
     def _mvn(self, *args):
         mvn_command_and_args = [self.mvn_command, "-B", "-T8"]
 
-        if self.env.local_repos:
-            # NB: Assume the first local_repo entry is the canonical one for mvn to use.
-            # FIXME: Need to distinguish between local paths that are *repo caches*
-            # versus those that are *Nexus storage directories*. We don't want mvn to
-            # write anything into Nexus storage directories by treating them as local repos caches.
-            mvn_command_and_args.append(f"-Dmaven.repo.local={self.env.local_repos[0]}")
+        if self.env.repo_cache:
+            mvn_command_and_args.append(f"-Dmaven.repo.local={self.env.repo_cache}")
 
         return SysCallResolver._run(*mvn_command_and_args)
-
-    def _maven_repo_local(self) -> Optional[str]:
-        """Local repository cache directory override for -Dmaven.repo.local."""
-
-    def _remote_repositories(self) -> Optional[str]:
-        """
-        Repositories in the format id::[layout]::url, separated by comma.
-        Needed e.g. for mvn's dependency:get goal.
-        """
-        return (
-            ",".join(f"{name}::::{url}" for name, url in self.env.remote_repos.items())
-            if self.env.remote_repos
-            else None
-        )
 
     @staticmethod
     def _run(command, *args):
         command_and_args = (command,) + args
-        #_logger.debug(f"Executing: {command_and_args}")
+        # _logger.debug(f"Executing: {command_and_args}")
         # FIXME: capture stdout and stderr separately.
         # If exit code non-zero, raise exception with stdout+stderr contents.
         # If exit code zero, return stdout only.
@@ -194,10 +177,10 @@ class Environment:
         Create a Maven environment.
 
         :param repo_cache:
-            Optional path to Maven local repository cache directory, i.e. a destination
+            Optional path to Maven local repository cache directory, i.e. destination
             of `mvn install`. Maven typically uses ~/.m2/repository by default.
             This directory is treated as *read-write* by this library, e.g.
-            the resolve() function will store downloaded artifacts here.
+            the download() function will store downloaded artifacts there.
             If no local repository cache path is given, Maven defaults will be used
             (M2_REPO environment variable, or ~/.m2/repository by default).
         :param local_repos:
@@ -217,7 +200,8 @@ class Environment:
         self.repo_cache: Path = repo_cache or os.environ.get("M2_REPO", Path("~").expanduser() / "m2" / "repository")
         self.local_repos: List[Path] = local_repos.copy() if local_repos else []
         self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
-        self.resolver: Resolver = SysCallResolver(self, "mvn") # CTR FIXME use SimpleResolver once it is implemented. And don't hardcode relative `mvn` executable either!
+        self.resolver: Resolver = resolver if resolver else SimpleResolver()
+        self.resolver.env = self
 
     def project(self, groupId: str, artifactId: str):
         return Project(self, groupId, artifactId)
@@ -235,6 +219,14 @@ class Project:
 
     def component(self, version: str) -> "Component":
         return Component(self, version)
+
+    def metadata(self):
+        prefix = Path(*self.groupId.split("."), self.artifactId)
+        # CTR FIXME: track down the right maven-metadata-foo.xml amongst
+        # repo_cache, local_repos, and downloading it as needed.
+        #metadata_path = self.env.repo_cache / prefix / "maven-metadata.xml"
+        #return Metadata(metadata_path)
+        raise RuntimeError("Unimplemented")
 
     def release(self, update: bool = True) -> str:
         """
@@ -262,8 +254,8 @@ class Component:
     def artifact(self, classifier: str = "", packaging: str = "jar") -> "Artifact":
         return Artifact(self, classifier, packaging)
 
-    def pom(self) -> "Artifact":
-        return self.artifact(packaging="pom")
+    def pom(self) -> "POM":
+        return POM(self.artifact(packaging="pom").path)
 
     @property
     def env(self) -> Environment:
@@ -307,43 +299,40 @@ class Artifact:
 
     @property
     def path(self) -> Path:
-        # Check Maven local repository cache first if available.
-        # Then check local Maven repository storage directories, if any.
-        bases = []
-        if self.env.repo_cache:
-            bases.append(self.env.repo_cache)
-        bases.extend(self.env.local_repos)
         prefix = Path(*self.groupId.split("."), self.artifactId, self.version)
-        for base in bases:
-            dir = base / prefix
-            p = dir / self.filename()
+
+        # Check Maven local repository cache first if available.
+        if self.env.repo_cache:
+            cached_file = self.env.repo_cache / prefix / self.filename
+            if cached_file.exists():
+                return cached_file
+
+        # Check locally available Maven repository storage directories, if any.
+        for base in self.env.local_repos:
             # CTR FIXME: Be smarter than this when version is a SNAPSHOT,
-            # because local repo storage has timestamped filenames.
+            # because local repo storage has timestamped SNAPSHOT filenames.
+            p = base / prefix / self.filename
             if p.exists():
                 return p
 
-        # Artifact was not found locally; need to invoke the resolver.
-        return self.env.resolver.resolve(self)
+        # Artifact was not found locally; need to download it.
+        return self.env.resolver.download(self)
 
     def md5(self) -> str:
-        #return "d378517ad2287c148f60327caca4956e966f6ba4"
-        raise RuntimeError("Unimplemented")
+        return self._checksum("md5", md5)
 
     def sha1(self) -> str:
-        #return "d378517ad2287c148f60327caca4956e966f6ba4"
-        raise RuntimeError("Unimplemented")
+        return self._checksum("sha1", sha1)
 
-    def timestamp(self) -> str:
-        #return "20210915210749"
-        raise RuntimeError("Unimplemented")
-
+    @property
     def filename(self) -> str:
         classifier_suffix = f"-{self.classifier}" if self.classifier else ""
         return f"{self.artifactId}-{self.version}{classifier_suffix}.{self.packaging}"
 
-    def filesize(self) -> int:
-        #return 12893
-        raise RuntimeError("Unimplemented")
+    def _checksum(self, suffix, func):
+        p = self.path
+        checksum_path = p.parent / f"{p.name}.{suffix}"
+        return io.text(checksum_path) or func(io.binary(p)).hexdigest()
 
 
 class Dependency:
@@ -351,7 +340,8 @@ class Dependency:
     This is an Artifact with scope, optional flag, and exclusions list.
     """
 
-    def __init__(self, artifact: Artifact, scope: str = "compile", optional: bool = False, exclusions: Sequence[Project] = None):
+    def __init__(self, artifact: Artifact, scope: str = "compile", optional: bool = False,
+                 exclusions: Sequence[Project] = None):
         self.artifact = artifact
         self.scope = scope
         self.optional = optional
@@ -366,34 +356,35 @@ class XML:
 
     def __init__(self, source):
         self.source = source
-        self.tree = ET.parse(source)
+        self.tree = ElementTree.parse(source)
         XML._strip_ns(self.tree.getroot())
 
-    def elements(self, path: str) -> List[ET.Element]:
+    def elements(self, path: str) -> List[ElementTree.Element]:
         return self.tree.findall(path)
 
     def value(self, path: str) -> Optional[str]:
-        el = self.elements(path)
-        assert len(el) <= 1
-        return None if len(el) == 0 else el[0].text
+        elements = self.elements(path)
+        assert len(elements) <= 1
+        return elements[0].text if len(elements) > 0 else None
 
     @staticmethod
-    def _strip_ns(el: ET.Element) -> None:
+    def _strip_ns(el: ElementTree.Element) -> None:
         """
         Remove namespace prefixes from elements and attributes.
         Credit: https://stackoverflow.com/a/32552776/1207769
         """
         if el.tag.startswith("{"):
-            el.tag = el.tag[el.tag.find("}")+1:]
+            el.tag = el.tag[el.tag.find("}") + 1:]
         for k in list(el.attrib.keys()):
             if k.startswith("{"):
-                k2 = k[k.find("}")+1:]
+                k2 = k[k.find("}") + 1:]
                 el.attrib[k2] = el.attrib[k]
                 del el.attrib[k]
         for child in el:
             XML._strip_ns(child)
 
-class MavenPOM(XML):
+
+class POM(XML):
     """
     Convenience wrapper around a Maven POM XML document.
     """
@@ -442,22 +433,15 @@ class MavenPOM(XML):
             devs.append(dev)
         return devs
 
-    def interpolate(self, env) -> "POM":
-        """
-        Recursively parse ancestor POMs and integrate them.
-        """
-        # TODO: Decide where this function should actually live.
-        raise RuntimeError("Unimplemented")
 
-
-class MavenMetadata(XML):
+class Metadata(XML):
+    """
+    Convenience wrapper around a maven-metadata.xml document.
+    """
 
     @property
     def groupId(self) -> Optional[str]:
-        try:
-            return self.value("groupId")
-        except Exception:
-            return self.value("parent/groupId")
+        return self.value("groupId")
 
     @property
     def artifactId(self) -> Optional[str]:
@@ -495,6 +479,7 @@ def ts2dt(ts: str) -> datetime:
     * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
     * 20210702.144917 (seen in deployed SNAPSHOT filenames)
     """
-    m = re.match("(\d{4})(\d\d)(\d\d)\.?(\d\d)(\d\d)(\d\d)", ts)
-    if not m: raise ValueError(f"Invalid timestamp: {ts}")
-    return datetime(*map(int, m.groups())) #noqa
+    m = re.match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
+    if not m:
+        raise ValueError(f"Invalid timestamp: {ts}")
+    return datetime(*map(int, m.groups()))  # noqa

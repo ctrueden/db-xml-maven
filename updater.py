@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+from pathlib import Path
+from datetime import datetime
+
 from lxml import etree
 
 import maven
@@ -9,6 +12,7 @@ class FilesCollection:
 
     def __init__(self):
         self.tree = None
+        resolver = SysCallResolver(self, "mvn") # CTR FIXME use SimpleResolver once it is implemented. And don't hardcode relative `mvn` executable either!
         self.env = maven.Environment()
 
     def load(self, path):
@@ -58,3 +62,14 @@ class FilesCollection:
             previous_version.set("timestamp-obsolete", "0")
             previous_version.set("checksum", "8dee3846e4ca1a0ad4169cf5e4859bcf52b878af")
             previous_version.set("filename", "plugins/3D_Blob_Segmentation.jar")
+
+
+def timestamp(path: Path) -> str:
+    """Get a timestamp string of the form YYYYMMDDhhmmss."""
+    mtime = self.path().stat().st_mtime
+    dt = datetime.fromtimestamp(mtime)
+    return dt.strftime("%Y%m%d%H%M%S")
+
+def filesize(path: Path) -> int:
+    return path.stat().st_size
+
