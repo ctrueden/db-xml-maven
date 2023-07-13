@@ -544,19 +544,28 @@ class POM(XML):
 
     @property
     def developers(self) -> List[Dict[str, Any]]:
-        devs = []
-        for el in self.elements("developers/developer"):
-            dev: Dict[str, Any] = {}
+        return self._people("developers/developer")
+
+    @property
+    def contributors(self) -> List[Dict[str, Any]]:
+        return self._people("contributors/contributor")
+
+    @property
+    def _people(self, elements) -> List[Dict[str, Any]]:
+        people = []
+        for el in elements:
+            person: Dict[str, Any] = {}
             for child in el:
                 if len(child) == 0:
-                    dev[child.tag] = child.text
+                    person[child.tag] = child.text
                 else:
-                    if child.tag == 'properties':
-                        dev[child.tag] = {grand.tag: grand.text for grand in child}
+                    if child.tag == "properties":
+                        for grand in child:
+                            person[grand.tag] = grand.text
                     else:
-                        dev[child.tag] = [grand.text for grand in child]
-            devs.append(dev)
-        return devs
+                        person[child.tag] = [grand.text for grand in child]
+            people.append(person)
+        return people
 
     def dependencies(self) -> List[Dependency]:
         return [
