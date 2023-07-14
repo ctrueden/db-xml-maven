@@ -165,8 +165,8 @@ class FilesCollection:
             # <dependency> tags
             for dep in pom.dependencies():
                 dependency = etree.SubElement(version, "dependency")
-                dependency.set("filename", "jars/ij.jar")
-                dependency.set("timestamp", "20110203144124")
+                dependency.set("filename", f"jars/{dep.artifact.filename}")
+                dependency.set("timestamp", timestamp(dep.artifact.path))
 
             # <author> tags
             # Use developers and contributors from the POM, founders first, then others.
