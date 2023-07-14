@@ -73,7 +73,6 @@ class FilesCollection:
         self.current: Set[Artifact] = set()
 
     def add_artifact(self, artifact: Artifact, current_version: bool = True):
-        print(f"add_artifact({artifact.groupId}:{artifact.artifactId}:{artifact.version}:{artifact.classifier}:{artifact.packaging}, {current_version,})")
         # Register artifact.
         if not self._register_artifact(artifact, current_version):
             # Artifact already processed.
@@ -95,9 +94,8 @@ class FilesCollection:
             # Artifact already processed.
             return False
         self.artifacts.add(artifact)
-        print(f"Registered {artifact.groupId}:{artifact.artifactId}:{artifact.version}!")
+        print(f"Registered {artifact}{' <-- CURRENT' if current_version else ''}")
         if current_version:
-            print(f"--> And it is a current version!")
             self.current.add(artifact)
         return True
 
@@ -106,11 +104,7 @@ class FilesCollection:
             # This component's dependencies have already been processed.
             return
         self.components.add(artifact.component)
-        print(f"Register dependencies for {artifact.groupId}:{artifact.artifactId}:{artifact.version}...")
-        # CTR FIXME: make this API more elegant
-        pom_artifact = artifact.component.artifact(packaging="pom")
-        effective_pom = artifact.env.resolver.interpolate(pom_artifact)
-        # pom = artifact.component.pom()
+        effective_pom = artifact.component.pom(interpolated=True)
         for dep in effective_pom.dependencies():
             if dep.scope in ("compile", "runtime"):
                 self._register_artifact(dep.artifact, current_version)

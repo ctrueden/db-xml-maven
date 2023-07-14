@@ -1,58 +1,3 @@
-"""
-PLAN:
-Steal XML and POM code from my other project.
-Use Python built-in ElementTree to avoid deps, because it's good enough for this.
-Make the POM class more powerful, but without depending on mvn.
-In particular, add support for interpolation and dependency reasoning.
-Can activate certain profiles as well during interpolation:
-- activeByDefault: always
-- <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
-- <jdk>: tricky...
-- others: no
-
-Once I have a working interpolated POM parser, I can get project dependencies from it.
-
-Agh, remote resolution is more challenging. Do I want to open that can of worms?
-- I think I do... <_<
-
-For dependency reasoning, more challenges:
-- transitive dependencies
-- dependency exclusions
-- It's all doable, though.
-- It's tempting to cache dependency lists once computed. But need to watch out for platform-specific deps.
-
-Sources:
-- local repo cache -- but might have missing bits that need remote resolution
-- actual source repository -- cross-repositories deps still an issue
-
-Code a Maven interface with two different backends?
-- Pure Python one, the default. <-- Is this Mini-Maven Python? :-/ Avoids Windows system call woes...?
-- One backed by mvn, when more power is needed.
-
-It's feasible to resolve directly from Nexus v2 storage:
-
-    $ ls /opt/sonatype-work/nexus/storage/central/org/scijava/scijava-common/2.93.0/
-    scijava-common-2.93.0.jar
-
-    $ ls /opt/sonatype-work/nexus/storage/sonatype-s01/org/scijava/scijava-common/2.94.2
-    scijava-common-2.94.2.jar  scijava-common-2.94.2.pom  scijava-common-2.94.2-sources.jar  scijava-common-2.94.2-tests.jar
-
-    $ ls /opt/sonatype-work/nexus/storage/snapshots/org/scijava/scijava-common/2.94.3-SNAPSHOT
-    maven-metadata.xml                                        scijava-common-2.94.3-20230706.150124-1.pom
-    maven-metadata.xml.md5                                    scijava-common-2.94.3-20230706.150124-1.pom.md5
-    maven-metadata.xml.sha1                                   scijava-common-2.94.3-20230706.150124-1.pom.sha1
-    scijava-common-2.94.3-20230706.150124-1.jar               scijava-common-2.94.3-20230706.150124-1-sources.jar
-    scijava-common-2.94.3-20230706.150124-1.jar.md5           scijava-common-2.94.3-20230706.150124-1-sources.jar.md5
-    scijava-common-2.94.3-20230706.150124-1.jar.sha1          scijava-common-2.94.3-20230706.150124-1-sources.jar.sha1
-    scijava-common-2.94.3-20230706.150124-1-javadoc.jar       scijava-common-2.94.3-20230706.150124-1-tests.jar
-    scijava-common-2.94.3-20230706.150124-1-javadoc.jar.md5   scijava-common-2.94.3-20230706.150124-1-tests.jar.md5
-    scijava-common-2.94.3-20230706.150124-1-javadoc.jar.sha1  scijava-common-2.94.3-20230706.150124-1-tests.jar.sha1
-
-This would be nice for performance for some scenarios: run on the same server that hosts the Nexus.
-
-The main wrinkle is that snapshots are *all* timestamped on the remote; there is no copy of the newest snapshot artifacts with non-timestamped names.
-"""
-
 import os
 import re
 import subprocess
@@ -131,6 +76,14 @@ class SimpleResolver(Resolver):
         raise RuntimeError("Unimplemented")
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
+        """
+        NOTES
+        Activate certain profiles as well during interpolation:
+        - activeByDefault: always
+        - <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
+        - <jdk>: tricky...
+        - others: no
+        """
         pom = pom_artifact.component.pom()
         # CTR FIXME do the interpolation ourselves!
         raise RuntimeError("Unimplemented")
@@ -146,7 +99,7 @@ class SysCallResolver(Resolver):
         self.mvn_command = mvn_command
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        print(f"Downloading artifact {artifact}")
+        print(f"Downloading artifact: {artifact}")
         assert artifact.env.repo_cache
         assert artifact.groupId
         assert artifact.artifactId
@@ -172,7 +125,7 @@ class SysCallResolver(Resolver):
         return artifact.cached_path
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
-        print(f"Interpolating POM: {pom_artifact.groupId}:{pom_artifact.artifactId}:{pom_artifact.version}")
+        print(f"Interpolating POM: {pom_artifact}")
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
@@ -270,8 +223,10 @@ class Project:
         self.artifactId = artifactId
 
     def __eq__(self, other):
-        return self.groupId == other.groupId \
+        return (
+            self.groupId == other.groupId
             and self.artifactId == other.artifactId
+        )
 
     def __hash__(self):
         return hash((self.groupId, self.artifactId))
@@ -334,6 +289,30 @@ class Project:
         # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptions regarding how Components and Artifacts relate.
         # You can only "sort of" have an artifact for a SNAPSHOT without a timestamp lock... it's always timestamped on the remote side,
         # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
+        #
+        # NOTES
+        # It's feasible to resolve directly from Nexus v2 storage:
+        #
+        #     $ ls /opt/sonatype-work/nexus/storage/central/org/scijava/scijava-common/2.93.0/
+        #     scijava-common-2.93.0.jar
+        #
+        #     $ ls /opt/sonatype-work/nexus/storage/sonatype-s01/org/scijava/scijava-common/2.94.2
+        #     scijava-common-2.94.2.jar  scijava-common-2.94.2.pom  scijava-common-2.94.2-sources.jar  scijava-common-2.94.2-tests.jar
+        #
+        #     $ ls /opt/sonatype-work/nexus/storage/snapshots/org/scijava/scijava-common/2.94.3-SNAPSHOT
+        #     maven-metadata.xml                                        scijava-common-2.94.3-20230706.150124-1.pom
+        #     maven-metadata.xml.md5                                    scijava-common-2.94.3-20230706.150124-1.pom.md5
+        #     maven-metadata.xml.sha1                                   scijava-common-2.94.3-20230706.150124-1.pom.sha1
+        #     scijava-common-2.94.3-20230706.150124-1.jar               scijava-common-2.94.3-20230706.150124-1-sources.jar
+        #     scijava-common-2.94.3-20230706.150124-1.jar.md5           scijava-common-2.94.3-20230706.150124-1-sources.jar.md5
+        #     scijava-common-2.94.3-20230706.150124-1.jar.sha1          scijava-common-2.94.3-20230706.150124-1-sources.jar.sha1
+        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar       scijava-common-2.94.3-20230706.150124-1-tests.jar
+        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar.md5   scijava-common-2.94.3-20230706.150124-1-tests.jar.md5
+        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar.sha1  scijava-common-2.94.3-20230706.150124-1-tests.jar.sha1
+        #
+        # This would be nice for performance for some scenarios: run on the same server that hosts the Nexus.
+        #
+        # The main wrinkle is that snapshots are *all* timestamped on the remote; there is no copy of the newest snapshot artifacts with non-timestamped names.
         raise RuntimeError("Unimplemented")
 
 
@@ -348,8 +327,10 @@ class Component:
         self.version = version
 
     def __eq__(self, other):
-        return self.project == other.project \
+        return (
+            self.project == other.project
             and self.version == other.version
+        )
 
     def __hash__(self):
         return hash((self.project, self.version))
@@ -380,12 +361,21 @@ class Component:
     def artifact(self, classifier: str = DEFAULT_CLASSIFIER, packaging: str = DEFAULT_PACKAGING) -> "Artifact":
         return Artifact(self, classifier, packaging)
 
-    def pom(self) -> "POM":
+    def pom(self, interpolated: bool = False) -> "POM":
         """
         Get a data structure with the contents of the POM.
+
+        :param interpolated:
+            If True, the POM will be flattened and interpolated,
+            like the help:effective-pom goal does.
+        :return: The POM content.
         """
         pom_artifact = self.artifact(packaging="pom")
-        return POM(pom_artifact.path, self.env)
+        return (
+            self.env.resolver.interpolate(pom_artifact)
+            if interpolated
+            else POM(pom_artifact.path, self.env)
+        )
 
 
 class Artifact:
@@ -400,9 +390,11 @@ class Artifact:
         self.packaging = packaging
 
     def __eq__(self, other):
-        return self.component == other.component \
-            and self.classifier == other.classifier \
+        return (
+            self.component == other.component
+            and self.classifier == other.classifier
             and self.packaging == other.packaging
+        )
 
     def __hash__(self):
         return hash((self.component, self.classifier, self.packaging))
