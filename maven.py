@@ -75,6 +75,7 @@ DEFAULT_SCOPE = "compile"
 
 
 # -- Functions --
+
 def ts2dt(ts: str) -> datetime:
     """
     Converts Maven-style timestamp strings into Python datetime objects.
@@ -84,9 +85,19 @@ def ts2dt(ts: str) -> datetime:
     * 20210702.144917 (seen in deployed SNAPSHOT filenames)
     """
     m = re.match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
-    if not m:
-        raise ValueError(f"Invalid timestamp: {ts}")
+    if not m: raise ValueError(f"Invalid timestamp: {ts}")
     return datetime(*map(int, m.groups()))  # noqa
+
+
+def coord2str(groupId: str, artifactId: str, version: str = None, classifier: str = None, packaging: str = None, scope: str = None, optional: bool = False):
+    # We match the order from the dependency:list goal: G:A:P:C:V:S.
+    s = f"{groupId}:{artifactId}"
+    if packaging: s += f":{packaging}"
+    if classifier: s += f":{classifier}"
+    if version: s += f":{version}"
+    if scope: s += f":{scope}"
+    if optional: s += " (optional)"
+    return s
 
 
 # -- Classes --
@@ -135,6 +146,7 @@ class SysCallResolver(Resolver):
         self.mvn_command = mvn_command
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
+        print(f"Downloading artifact {artifact}")
         assert artifact.env.repo_cache
         assert artifact.groupId
         assert artifact.artifactId
@@ -186,17 +198,14 @@ class SysCallResolver(Resolver):
         command_and_args = (command,) + args
         # _logger.debug(f"Executing: {command_and_args}")
         result = subprocess.run(command_and_args, capture_output=True)
-        if result.returncode == 0:
-            return result.stdout.decode()
+        if result.returncode == 0: return result.stdout.decode()
 
         error_message = (
             f"Command failed with exit code {result.returncode}:\n"
             f"{command_and_args}"
         )
-        if result.stdout:
-            error_message += f"\n\n[stdout]\n{result.stdout.decode()}"
-        if result.stderr:
-            error_message += f"\n\n[stderr]\n{result.stderr.decode()}"
+        if result.stdout: error_message += f"\n\n[stdout]\n{result.stdout.decode()}"
+        if result.stderr: error_message += f"\n\n[stderr]\n{result.stderr.decode()}"
         raise RuntimeError(error_message)
 
 
@@ -240,7 +249,7 @@ class Environment:
             Optional mechanism to use for resolving local paths to artifacts.
             By default, the SimpleResolver will be used.
         """
-        self.repo_cache: Path = repo_cache or os.environ.get("M2_REPO", Path("~").expanduser() / "m2" / "repository")
+        self.repo_cache: Path = repo_cache or os.environ.get("M2_REPO", Path("~").expanduser() / ".m2" / "repository")
         self.local_repos: List[Path] = local_repos.copy() if local_repos else []
         self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
         self.resolver: Resolver = resolver if resolver else SimpleResolver()
@@ -266,6 +275,9 @@ class Project:
 
     def __hash__(self):
         return hash((self.groupId, self.artifactId))
+
+    def __str__(self):
+        return coord2str(self.groupId, self.artifactId)
 
     @property
     def path_prefix(self) -> Path:
@@ -342,6 +354,9 @@ class Component:
     def __hash__(self):
         return hash((self.project, self.version))
 
+    def __str__(self):
+        return coord2str(self.groupId, self.artifactId, self.version)
+
     @property
     def env(self) -> Environment:
         return self.project.env
@@ -373,7 +388,6 @@ class Component:
         return POM(pom_artifact.path, self.env)
 
 
-
 class Artifact:
     """
     This is a Component plus classifier and packaging.
@@ -392,6 +406,9 @@ class Artifact:
 
     def __hash__(self):
         return hash((self.component, self.classifier, self.packaging))
+
+    def __str__(self):
+        return coord2str(self.groupId, self.artifactId, self.version, self.classifier, self.packaging)
 
     @property
     def env(self) -> Environment:
@@ -444,16 +461,14 @@ class Artifact:
 
         # Check Maven local repository cache first if available.
         cached_file = self.cached_path
-        if cached_file and cached_file.exists():
-            return cached_file
+        if cached_file and cached_file.exists(): return cached_file
 
         # Check any locally available Maven repository storage directories.
         for base in self.env.local_repos:
             # CTR FIXME: Be smarter than this when version is a SNAPSHOT,
             # because local repo storage has timestamped SNAPSHOT filenames.
             p = base / self.component.path_prefix / self.filename
-            if p.exists():
-                return p
+            if p.exists(): return p
 
         # Artifact was not found locally; need to download it.
         return self.env.resolver.download(self)
@@ -487,9 +502,32 @@ class Dependency:
         self.optional = optional
         self.exclusions: Tuple[Project] = tuple() if exclusions is None else tuple(exclusions)
 
+    def __str__(self):
+        return coord2str(self.groupId, self.artifactId, self.version, self.classifier, self.packaging, self.scope, self.optional)
+
     @property
     def env(self) -> Environment:
         return self.artifact.env
+
+    @property
+    def groupId(self) -> str:
+        return self.artifact.groupId
+
+    @property
+    def artifactId(self) -> str:
+        return self.artifact.artifactId
+
+    @property
+    def version(self) -> str:
+        return self.artifact.version
+
+    @property
+    def classifier(self) -> str:
+        return self.artifact.classifier
+
+    @property
+    def packaging(self) -> str:
+        return self.artifact.packaging
 
 
 class XML:
@@ -564,14 +602,14 @@ class POM(XML):
 
     @property
     def developers(self) -> List[Dict[str, Any]]:
-        return self._people("developers/developer")
+        return POM._people("developers/developer")
 
     @property
     def contributors(self) -> List[Dict[str, Any]]:
-        return self._people("contributors/contributor")
+        return POM._people("contributors/contributor")
 
-    @property
-    def _people(self, elements) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _people(elements) -> List[Dict[str, Any]]:
         people = []
         for el in elements:
             person: Dict[str, Any] = {}
