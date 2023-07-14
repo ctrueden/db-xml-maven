@@ -107,8 +107,11 @@ class FilesCollection:
             return
         self.components.add(artifact.component)
         print(f"Register dependencies for {artifact.groupId}:{artifact.artifactId}:{artifact.version}...")
-        pom = artifact.component.pom()
-        for dep in pom.dependencies():
+        # CTR FIXME: make this API more elegant
+        pom_artifact = artifact.component.artifact(packaging="pom")
+        effective_pom = artifact.env.resolver.interpolate(pom_artifact)
+        # pom = artifact.component.pom()
+        for dep in effective_pom.dependencies():
             if dep.scope in ("compile", "runtime"):
                 self._register_artifact(dep.artifact, current_version)
 

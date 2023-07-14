@@ -59,7 +59,7 @@ import subprocess
 from datetime import datetime
 from hashlib import md5, sha1
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Sequence, Tuple
+from typing import Any, Dict, Optional, List, Sequence, Tuple, Union
 from xml.etree import ElementTree
 
 import requests
@@ -106,7 +106,7 @@ class Resolver:
         """
         raise RuntimeError("Unimplemented")
 
-    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
+    def interpolate(self, pom_artifact: "Artifact") -> "POM":
         raise RuntimeError("Unimplemented")
 
 
@@ -119,7 +119,7 @@ class SimpleResolver(Resolver):
     def download(self, artifact: "Artifact") -> Optional[Path]:
         raise RuntimeError("Unimplemented")
 
-    def interpolate(self, pom_artifact: "Artifact") -> "Artifact":
+    def interpolate(self, pom_artifact: "Artifact") -> "POM":
         pom = pom_artifact.component.pom()
         # CTR FIXME do the interpolation ourselves!
         raise RuntimeError("Unimplemented")
@@ -160,6 +160,7 @@ class SysCallResolver(Resolver):
         return artifact.cached_path
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
+        print(f"Interpolating POM: {pom_artifact.groupId}:{pom_artifact.artifactId}:{pom_artifact.version}")
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
@@ -493,10 +494,14 @@ class Dependency:
 
 class XML:
 
-    def __init__(self, source, env: Optional[Environment] = None):
+    def __init__(self, source: Union[str, Path], env: Optional[Environment] = None):
         self.source = source
         self.env: Environment = env or Environment()
-        self.tree: ElementTree.ElementTree = ElementTree.parse(source)
+        self.tree: ElementTree.ElementTree = (
+            ElementTree.ElementTree(ElementTree.fromstring(source))
+            if isinstance(source, str)
+            else ElementTree.parse(source)
+        )
         XML._strip_ns(self.tree.getroot())
 
     def elements(self, path: str) -> List[ElementTree.Element]:
