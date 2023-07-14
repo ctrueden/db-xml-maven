@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+from abc import ABC, abstractmethod
 from datetime import datetime
 from hashlib import md5, sha1
 from pathlib import Path
@@ -10,7 +11,6 @@ from xml.etree import ElementTree
 import requests
 
 import io
-
 
 # -- Constants --
 
@@ -47,23 +47,30 @@ def coord2str(groupId: str, artifactId: str, version: str = None, classifier: st
 
 # -- Classes --
 
-class Resolver:
+class Resolver(ABC):
     """
     Logic for doing non-trivial Maven-related things, including:
     * downloading and caching an artifact from a remote repository; and
     * interpolating a POM to create a complete, flat version with profiles applied.
     """
 
+    @abstractmethod
     def download(self, artifact: "Artifact") -> Optional[Path]:
         """
         Download an artifact file from a remote repository.
         :param artifact: The artifact for which a local path should be resolved.
         :return: Local path to the saved artifact, or None if the artifact cannot be resolved.
         """
-        raise RuntimeError("Unimplemented")
+        ...
 
+    @abstractmethod
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
-        raise RuntimeError("Unimplemented")
+        """
+        Flatten and interpolate the POM, like the help:effective-pom goal does.
+        :param pom_artifact: Artifact object referencing the POM of a component.
+        :return: The POM content.
+        """
+        ...
 
 
 class SimpleResolver(Resolver):
@@ -73,17 +80,31 @@ class SimpleResolver(Resolver):
     """
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        raise RuntimeError("Unimplemented")
+        if artifact.version.endswith("-SNAPSHOT"):
+            raise RuntimeError("Downloading of snapshots is not yet implemented.")
+        for remote_repo in artifact.env.remote_repos:
+            # Consider raising an exception for snapshots for the moment?
+            url = f"{remote_repo}/{artifact.component.path_prefix}/{artifact.filename}"
+            response: requests.Response = requests.get(url)
+            if response.status_code == 200:
+                # Artifact downloaded successfully.
+                # Also get MD5 and SHA1 files if available.
+                # And for each, if it *is* available and successfully gotten,
+                # check the actual hash of the downloaded file contents against the expected one.
+                path_in_repo_cache: Path = "FIXME"
+                assert not path_in_repo_cache.exists()
+                with open(path_in_repo_cache, "wb") as f:
+                    f.write(response.content)
+                return path_in_repo_cache
+        raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
-        """
-        NOTES
-        Activate certain profiles as well during interpolation:
-        - activeByDefault: always
-        - <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
-        - <jdk>: tricky...
-        - others: no
-        """
+        # NOTES
+        # Activate certain profiles as well during interpolation:
+        # - activeByDefault: always
+        # - <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
+        # - <jdk>: tricky...
+        # - others: no
         pom = pom_artifact.component.pom()
         # CTR FIXME do the interpolation ourselves!
         raise RuntimeError("Unimplemented")
@@ -206,7 +227,6 @@ class Environment:
         self.local_repos: List[Path] = local_repos.copy() if local_repos else []
         self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
         self.resolver: Resolver = resolver if resolver else SimpleResolver()
-        self.resolver.env = self
 
     def project(self, groupId: str, artifactId: str):
         return Project(self, groupId, artifactId)
