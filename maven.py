@@ -1,10 +1,11 @@
-import os
-import re
-import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime
 from hashlib import md5, sha1
+from itertools import combinations
+from os import environ
 from pathlib import Path
+from re import match
+from subprocess import run
 from typing import Any, Dict, Optional, List, Sequence, Tuple, Union
 from xml.etree import ElementTree
 
@@ -27,9 +28,9 @@ def ts2dt(ts: str) -> datetime:
 
     Valid forms:
     * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
-    * 20210702.144917 (seen in deployed SNAPSHOT filenames)
+    * 20210702.144917 (seen in deployed SNAPSHOT filenames and <snapshotVersion><value>)
     """
-    m = re.match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
+    m = match("(\\d{4})(\\d\\d)(\\d\\d)\\.?(\\d\\d)(\\d\\d)(\\d\\d)", ts)
     if not m: raise ValueError(f"Invalid timestamp: {ts}")
     return datetime(*map(int, m.groups()))  # noqa
 
@@ -82,20 +83,22 @@ class SimpleResolver(Resolver):
     def download(self, artifact: "Artifact") -> Optional[Path]:
         if artifact.version.endswith("-SNAPSHOT"):
             raise RuntimeError("Downloading of snapshots is not yet implemented.")
+
         for remote_repo in artifact.env.remote_repos:
             # Consider raising an exception for snapshots for the moment?
             url = f"{remote_repo}/{artifact.component.path_prefix}/{artifact.filename}"
             response: requests.Response = requests.get(url)
             if response.status_code == 200:
                 # Artifact downloaded successfully.
-                # Also get MD5 and SHA1 files if available.
+                # FIXME: Also get MD5 and SHA1 files if available.
                 # And for each, if it *is* available and successfully gotten,
                 # check the actual hash of the downloaded file contents against the expected one.
-                path_in_repo_cache: Path = "FIXME"
-                assert not path_in_repo_cache.exists()
-                with open(path_in_repo_cache, "wb") as f:
+                cached_file = artifact.cached_path
+                assert not cached_file.exists()
+                with open(cached_file, "wb") as f:
                     f.write(response.content)
-                return path_in_repo_cache
+                return cached_file
+
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
@@ -150,7 +153,7 @@ class SysCallResolver(Resolver):
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
-            "-f", pom_artifact.path,
+            "-f", pom_artifact.resolve,
             f"-Dmaven.repo.local={pom_artifact.env.repo_cache}"
         )
         lines = output.splitlines()
@@ -171,7 +174,7 @@ class SysCallResolver(Resolver):
     def _run(command, *args) -> str:
         command_and_args = (command,) + args
         # _logger.debug(f"Executing: {command_and_args}")
-        result = subprocess.run(command_and_args, capture_output=True)
+        result = run(command_and_args, capture_output=True)
         if result.returncode == 0: return result.stdout.decode()
 
         error_message = (
@@ -223,7 +226,7 @@ class Environment:
             Optional mechanism to use for resolving local paths to artifacts.
             By default, the SimpleResolver will be used.
         """
-        self.repo_cache: Path = repo_cache or os.environ.get("M2_REPO", Path("~").expanduser() / ".m2" / "repository")
+        self.repo_cache: Path = repo_cache or environ.get("M2_REPO", Path("~").expanduser() / ".m2" / "repository")
         self.local_repos: List[Path] = local_repos.copy() if local_repos else []
         self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
         self.resolver: Resolver = resolver if resolver else SimpleResolver()
@@ -265,12 +268,14 @@ class Project:
     def at_version(self, version: str) -> "Component":
         return Component(self, version)
 
-    def metadata(self):
-        # CTR FIXME: track down the right maven-metadata-foo.xml amongst
-        # repo_cache, local_repos, and downloading it as needed.
-        #metadata_path = self.env.repo_cache / self.path_prefix / "maven-metadata.xml"
-        #return Metadata(metadata_path)
-        raise RuntimeError("Unimplemented")
+    def metadata(self) -> "Metadata":
+        # Aggregate all locally available project maven-metadata.xml sources.
+        repo_cache_dir = self.env.repo_cache / self.path_prefix
+        paths = (
+            [p for p in repo_cache_dir.glob("maven-metadata*.xml")] +
+            [r / self.path_prefix / "maven-metadata.xml" for r in self.env.local_repos]
+        )
+        return Metadatas([MetadataXML(p) for p in paths if p.exists()])
 
     def update(self):
         # CTR FIXME: Update metadata from remote sources!
@@ -309,31 +314,17 @@ class Project:
         # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptions regarding how Components and Artifacts relate.
         # You can only "sort of" have an artifact for a SNAPSHOT without a timestamp lock... it's always timestamped on the remote side,
         # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
-        #
-        # NOTES
-        # It's feasible to resolve directly from Nexus v2 storage:
-        #
-        #     $ ls /opt/sonatype-work/nexus/storage/central/org/scijava/scijava-common/2.93.0/
-        #     scijava-common-2.93.0.jar
-        #
-        #     $ ls /opt/sonatype-work/nexus/storage/sonatype-s01/org/scijava/scijava-common/2.94.2
-        #     scijava-common-2.94.2.jar  scijava-common-2.94.2.pom  scijava-common-2.94.2-sources.jar  scijava-common-2.94.2-tests.jar
-        #
-        #     $ ls /opt/sonatype-work/nexus/storage/snapshots/org/scijava/scijava-common/2.94.3-SNAPSHOT
-        #     maven-metadata.xml                                        scijava-common-2.94.3-20230706.150124-1.pom
-        #     maven-metadata.xml.md5                                    scijava-common-2.94.3-20230706.150124-1.pom.md5
-        #     maven-metadata.xml.sha1                                   scijava-common-2.94.3-20230706.150124-1.pom.sha1
-        #     scijava-common-2.94.3-20230706.150124-1.jar               scijava-common-2.94.3-20230706.150124-1-sources.jar
-        #     scijava-common-2.94.3-20230706.150124-1.jar.md5           scijava-common-2.94.3-20230706.150124-1-sources.jar.md5
-        #     scijava-common-2.94.3-20230706.150124-1.jar.sha1          scijava-common-2.94.3-20230706.150124-1-sources.jar.sha1
-        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar       scijava-common-2.94.3-20230706.150124-1-tests.jar
-        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar.md5   scijava-common-2.94.3-20230706.150124-1-tests.jar.md5
-        #     scijava-common-2.94.3-20230706.150124-1-javadoc.jar.sha1  scijava-common-2.94.3-20230706.150124-1-tests.jar.sha1
-        #
-        # This would be nice for performance for some scenarios: run on the same server that hosts the Nexus.
-        #
-        # The main wrinkle is that snapshots are *all* timestamped on the remote; there is no copy of the newest snapshot artifacts with non-timestamped names.
-        raise RuntimeError("Unimplemented")
+        if locked: raise RuntimeError("Locked snapshot reporting is unimplemented")
+        metadata = self.metadata()
+        versions = metadata.versions
+        return [
+            self.at_version(v)
+            for v in metadata.versions
+            if (
+                (snapshots and v.endswith("-SNAPSHOT")) or
+                (releases and not v.endswith("-SNAPSHOT"))
+            )
+        ]
 
 
 class Component:
@@ -462,7 +453,7 @@ class Artifact:
         )
 
     @property
-    def path(self) -> Path:
+    def resolve(self) -> Path:
         """
         Resolves a local path to the artifact, downloading it as needed:
 
@@ -557,10 +548,13 @@ class XML:
     def elements(self, path: str) -> List[ElementTree.Element]:
         return self.tree.findall(path)
 
+    def values(self, path: str) -> List[str]:
+        return [el.text for el in self.elements(path)]
+
     def value(self, path: str) -> Optional[str]:
-        elements = self.elements(path)
-        assert len(elements) <= 1
-        return elements[0].text if len(elements) > 0 else None
+        values = self.values(path)
+        assert len(values) <= 1
+        return values[0] if values else None
 
     @staticmethod
     def _strip_ns(el: ElementTree.Element) -> None:
@@ -614,16 +608,15 @@ class POM(XML):
 
     @property
     def developers(self) -> List[Dict[str, Any]]:
-        return POM._people("developers/developer")
+        return self._people("developers/developer")
 
     @property
     def contributors(self) -> List[Dict[str, Any]]:
-        return POM._people("contributors/contributor")
+        return self._people("contributors/contributor")
 
-    @staticmethod
-    def _people(elements) -> List[Dict[str, Any]]:
+    def _people(self, path: str) -> List[Dict[str, Any]]:
         people = []
-        for el in elements:
+        for el in self.elements(path):
             person: Dict[str, Any] = {}
             for child in el:
                 if len(child) == 0:
@@ -661,7 +654,38 @@ class POM(XML):
         return Dependency(artifact, scope, optional, exclusions)
 
 
-class Metadata(XML):
+class Metadata(ABC):
+
+    @property
+    @abstractmethod
+    def groupId(self) -> Optional[str]: ...
+
+    @property
+    @abstractmethod
+    def artifactId(self) -> Optional[str]: ...
+
+    @property
+    @abstractmethod
+    def lastUpdated(self) -> Optional[datetime]: ...
+
+    @property
+    @abstractmethod
+    def latest(self) -> Optional[str]: ...
+
+    @property
+    @abstractmethod
+    def versions(self) -> List[str]: ...
+
+    @property
+    @abstractmethod
+    def lastVersion(self) -> Optional[str]: ...
+
+    @property
+    @abstractmethod
+    def release(self) -> Optional[str]: ...
+
+
+class MetadataXML(XML, Metadata):
     """
     Convenience wrapper around a maven-metadata.xml document.
     """
@@ -675,9 +699,9 @@ class Metadata(XML):
         return self.value("artifactId")
 
     @property
-    def lastUpdated(self) -> Optional[int]:
-        result = self.value("versioning/lastUpdated")
-        return None if result is None else int(result)
+    def lastUpdated(self) -> Optional[datetime]:
+        value = self.value("versioning/lastUpdated")
+        return ts2dt(value) if value else None
 
     @property
     def latest(self) -> Optional[str]:
@@ -687,10 +711,53 @@ class Metadata(XML):
         return self.value("versioning/latest")
 
     @property
+    def versions(self) -> List[str]:
+        return self.values("versioning/versions/version")
+
+    @property
     def lastVersion(self) -> Optional[str]:
-        vs = self.elements("versioning/versions/version")
-        return None if len(vs) == 0 else vs[-1].text
+        return vs[-1] if (vs := self.versions()) else None
 
     @property
     def release(self) -> Optional[str]:
         return self.value("versioning/release")
+
+class Metadatas(Metadata):
+    """
+    A unified Maven metadata combined over a collection of individual Maven metadata.
+    The typical use case for this class is to aggregate multiple maven-metadata.xml files
+    describing the same project, across multiple local repository cache and storage directories.
+    """
+
+    def __init__(self, metadatas: Sequence[Metadata]):
+        self.metadatas: List[Metadata] = sorted(metadatas, key=lambda m: m.lastUpdated)
+        for a, b in combinations(self.metadatas, 2):
+            assert a.groupId == b.groupId and a.artifactId == b.artifactId
+
+    @property
+    def groupId(self) -> Optional[str]:
+        return self.metadatas[0].groupId
+
+    @property
+    def artifactId(self) -> Optional[str]:
+        return self.metadatas[0].artifactId
+
+    @property
+    def lastUpdated(self) -> Optional[datetime]:
+        return self.metadatas[-1].lastUpdated
+
+    @property
+    def latest(self) -> Optional[str]:
+        return next((m.latest for m in reversed(self.metadatas) if m.latest), None)
+
+    @property
+    def versions(self) -> List[str]:
+        return [v for m in self.metadatas for v in m.versions]
+
+    @property
+    def lastVersion(self) -> Optional[str]:
+        return versions[-1] if (versions := self.versions) else None
+
+    @property
+    def release(self) -> Optional[str]:
+        return next((m.release for m in reversed(self.metadatas) if m.release), None)
