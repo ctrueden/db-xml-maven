@@ -110,6 +110,12 @@ class SimpleResolver(Resolver):
         # - others: no
         pom = pom_artifact.component.pom()
         # CTR FIXME do the interpolation ourselves!
+        # CTR START HERE -- This is the next thing to work on, because balineseOld runs mvn 3.6.0, but
+        # help:effective-pom requires 3.6.3+, at least some versions of the maven-help-plugin do which end up getting used.
+        # We can avoid the issue by implementing interpolation here in the SimpleResolver. In theory, the download function
+        # of SimpleResolver will never get hit on balineseOld... so only this interpolate function needs to exist.
+        #
+        # It's probably time to start writing unit tests... :-(
         raise RuntimeError("Unimplemented")
 
 
