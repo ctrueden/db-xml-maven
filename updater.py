@@ -150,7 +150,7 @@ class FilesCollection:
         if current_artifact:
             # <version> tag
             version = etree.SubElement(plugin, "version")
-            artifact_path = current_artifact.path
+            artifact_path = current_artifact.resolve()
             version.set("checksum", checksum(artifact_path))
             version.set("timestamp", timestamp(artifact_path))
             version.set("filesize", str(artifact_path.stat().st_size))
@@ -166,7 +166,7 @@ class FilesCollection:
             for dep in pom.dependencies():
                 dependency = etree.SubElement(version, "dependency")
                 dependency.set("filename", f"jars/{dep.artifact.filename}")
-                dependency.set("timestamp", timestamp(dep.artifact.path))
+                dependency.set("timestamp", timestamp(dep.artifact.resolve()))
 
             # <author> tags
             # Use developers and contributors from the POM, founders first, then others.
@@ -191,7 +191,7 @@ class FilesCollection:
                 # Not a "previous" version!
                 continue
             previous_version = etree.SubElement(plugin, "previous-version")
-            artifact_path = artifact.path
+            artifact_path = artifact.resolve()
             previous_version.set("timestamp", timestamp(artifact_path))
             # previous_version.set("timestamp-obsolete", "0")
             previous_version.set("checksum", checksum(artifact_path))

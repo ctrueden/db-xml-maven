@@ -153,7 +153,7 @@ class SysCallResolver(Resolver):
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
-            "-f", pom_artifact.resolve,
+            "-f", pom_artifact.resolve(),
             f"-Dmaven.repo.local={pom_artifact.env.repo_cache}"
         )
         lines = output.splitlines()
@@ -385,7 +385,7 @@ class Component:
         return (
             self.env.resolver.interpolate(pom_artifact)
             if interpolated
-            else POM(pom_artifact.path, self.env)
+            else POM(pom_artifact.resolve(), self.env)
         )
 
 
@@ -452,7 +452,6 @@ class Artifact:
             else None
         )
 
-    @property
     def resolve(self) -> Path:
         """
         Resolves a local path to the artifact, downloading it as needed:
@@ -483,7 +482,7 @@ class Artifact:
         return self._checksum("sha1", sha1)
 
     def _checksum(self, suffix, func):
-        p = self.path
+        p = self.resolve()
         checksum_path = p.parent / f"{p.name}.{suffix}"
         return io.text(checksum_path) or func(io.binary(p)).hexdigest()
 

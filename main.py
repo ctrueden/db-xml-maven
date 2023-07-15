@@ -3,12 +3,18 @@ import maven
 
 from pathlib import Path
 
-# Define the Maven artifact.
+# Create appropriate Maven environment.
+storage = Path("/opt/sonatype-work/nexus/storage")
+release_repos = ["releases", "thirdparty", "sonatype", "sonatype-s01", "central", "ome-releases"]
+snapshot_repos = ["snapshots", "sonatype-snapshots", "sonatype-snapshots-s01", "ome-snapshots"]
+local_repos = [repo for r in release_repos + snapshot_repos if (repo := storage / r).exists()]
 remote_repos = {
     "scijava.public": "https://maven.scijava.org/content/groups/public"
 }
 print("Creating Maven environment...")
-env = maven.Environment(remote_repos=remote_repos, resolver=maven.SysCallResolver(Path("mvn")))
+env = maven.Environment(local_repos=local_repos, remote_repos=remote_repos, resolver=maven.SysCallResolver(Path("mvn")))
+
+# Define the Maven artifact.
 project = env.project("net.imagej", "imagej")
 component = project.at_version("2.14.0")
 artifact = component.artifact()

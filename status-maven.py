@@ -196,18 +196,6 @@ class MavenComponent:
 
 # -- Functions --
 
-def ts2dt(ts: str) -> datetime:
-    """
-    Converts Maven-style timestamp strings into Python datetime objects.
-
-    Valid forms:
-    * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
-    * 20210702.144917 (seen in deployed SNAPSHOT filenames)
-    """
-    m = re.match("(\d{4})(\d\d)(\d\d)\.?(\d\d)(\d\d)(\d\d)", ts)
-    if not m: raise ValueError(f"Invalid timestamp: {ts}")
-    return datetime(*map(int, m.groups())) #noqa
-
 def resource_path(source: str) -> str:
     return None if source is None else source[len(storage):]
 
