@@ -127,6 +127,7 @@ class SysCallResolver(Resolver):
 
     def __init__(self, mvn_command: Path):
         self.mvn_command = mvn_command
+        self.mvn_flags = ["-B", "-T8"]
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
         print(f"Downloading artifact: {artifact}")
@@ -174,7 +175,8 @@ class SysCallResolver(Resolver):
         return POM("\n".join(lines[snip:snap + 1]), pom_artifact.env)
 
     def _mvn(self, *args) -> str:
-        return SysCallResolver._run(self.mvn_command, "-B", "-T8", *args)
+        # TODO: Windows.
+        return SysCallResolver._run(self.mvn_command, *self.mvn_flags, *args)
 
     @staticmethod
     def _run(command, *args) -> str:
@@ -550,16 +552,22 @@ class XML:
         )
         XML._strip_ns(self.tree.getroot())
 
+    def dump(self, el: ElementTree.Element = None) -> str:
+        return ElementTree.tostring(el if el else self.tree.getroot()).decode()
+
     def elements(self, path: str) -> List[ElementTree.Element]:
         return self.tree.findall(path)
+
+    def element(self, path: str) -> Optional[ElementTree.Element]:
+        els = self.elements(path)
+        assert len(els) <= 1
+        return els[0] if els else None
 
     def values(self, path: str) -> List[str]:
         return [el.text for el in self.elements(path)]
 
     def value(self, path: str) -> Optional[str]:
-        values = self.values(path)
-        assert len(values) <= 1
-        return values[0] if values else None
+        return el.text if (el := self.element(path)) else None
 
     @staticmethod
     def _strip_ns(el: ElementTree.Element) -> None:
@@ -635,10 +643,12 @@ class POM(XML):
             people.append(person)
         return people
 
-    def dependencies(self) -> List[Dependency]:
+    def dependencies(self, managed: bool = False) -> List[Dependency]:
+        xpath = "dependencies/dependency"
+        if managed: xpath = f"dependencyManagement/{xpath}"
         return [
             self._dependency(el)
-            for el in self.elements("dependencies/dependency")
+            for el in self.elements(xpath)
         ]
 
     def _dependency(self, el: ElementTree.Element) -> Dependency:
