@@ -8,11 +8,13 @@ interpolation works, and test the correctness of jgo's implementation.
 
 import random
 import sys
+from pathlib import Path
 
 from lxml import etree
 
 # -- Constants --
 
+OUTPUT_DIR = Path("thicket")
 TEMPLATE: bytes = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" \
@@ -61,44 +63,52 @@ def random_version() -> str:
     return str(v)
 
 
-def generate_pom(name, ancestor_count=ANCESTOR_COUNT, depth=0):
+def generate_pom(name, version=None, ancestor_count=ANCESTOR_COUNT, depth=0):
     root = etree.fromstring(TEMPLATE)
     if ancestor_count > 0:
         parent = create_child(root, "parent")
+        parent_name = f"{name}-parent{ancestor_count}"
+        v = random_version()
         create_child(parent, "groupId", GROUP_ID)
-        create_child(parent, "artifactId", f"{name}-parent{ancestor_count}")
-        create_child(parent, "version", random_version())
-        for a in range(ancestor_count - 1, 0, -1):
-            generate_pom(f"{name}-parent{a}", ancestor_count=a, depth=depth+1)
+        create_child(parent, "artifactId", parent_name)
+        create_child(parent, "version", v)
+        create_child(parent, "relativePath")
+        generate_pom(parent_name, version=v, ancestor_count=ancestor_count-1, depth=depth+1)
+    else:
+        create_child(root, "groupId", GROUP_ID)
+
+    create_child(root, "artifactId", name)
+    create_child(root, "version", version or random_version())
 
     bom_count = min(MAX_IMPORTS - depth, random.randint(0, MAX_IMPORTS))
     dep_mgmt = create_child(root, "dependencyManagement")
     dep_mgmt_deps = create_child(dep_mgmt, "dependencies")
     for a in range(bom_count):
         dep = create_child(dep_mgmt_deps, "dependency")
+        bom_name = f"{name}-bom{a + 1}"
         create_child(dep, "groupId", GROUP_ID)
-        create_child(dep, "artifactId", f"{name}-bom{a}")
+        create_child(dep, "artifactId", bom_name)
         # FIXME: sometimes use properties... think about how best to randomize that
         # - sometimes we want to define the property also in this POM, sometimes not.
         # - sometimes we want to add an explicit version element override here, sometimes not.
-        create_child(dep, "version", random_version())
+        v = random_version()
+        create_child(dep, "version", v)
         create_child(dep, "type", "pom")
         create_child(dep, "scope", "import")
-        generate_pom(f"{name}-bom{a}", ancestor_count=ancestor_count, depth=depth)
+        generate_pom(bom_name, version=v, ancestor_count=ancestor_count, depth=depth+1)
 
     # START HERE - randomly add some managed dependencies here!
     # randomize scope of these as well
 
     # TODO: add dependencies
 
-    return root
+    with open((OUTPUT_DIR / name).with_suffix(".pom"), "w") as f:
+        xml = etree.tostring(root, xml_declaration=True, pretty_print=True, encoding="utf-8").decode()
+        f.write(xml)
 
 
-def main(args):
-    root = generate_pom("thicket")
-    xml = etree.tostring(root, xml_declaration=True, encoding="utf-8").decode()
-    print(xml)
-
+# -- Main --
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    generate_pom("thicket")
