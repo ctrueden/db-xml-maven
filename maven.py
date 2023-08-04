@@ -11,7 +11,7 @@ from xml.etree import ElementTree
 
 import requests
 
-import io
+import iogo
 
 # -- Constants --
 
@@ -120,7 +120,7 @@ class SimpleResolver(Resolver):
         # Merge the POM chain from the eldest parent onward.
         effective_pom = poms.pop()
         while poms:
-            flatten(effective_pom, poms.pop().getroot())
+            self.interpolate(effective_pom, poms.pop().getroot())
 
         # Apply profiles.
         # Q: Does this happen before parents are merged? Read the Maven docs and code.
@@ -140,19 +140,19 @@ class SimpleResolver(Resolver):
         for dep in pom.elements("dependencyManagement/dependencies/dependency"):
             if dep.scope == "import":
                 assert dep.type == "pom"
-                flatten(effective_pom, dep.artifact, imported=True)
+                self.interpolate(effective_pom, dep.artifact, imported=True)
 
         # 3. Interpolate property values.
         props = {prop.tagname: prop.text for prop in pom.elements("properties/*")}
+
         def prop_value(props, k):
             if not k in props: return None
             v = props[k]
             re.match
 
-        # CTR START HERE -- Need to finish this next, because balineseOld runs mvn 3.6.0, but
-        # help:effective-pom requires 3.6.3+, at least some versions of the maven-help-plugin do which end up getting used.
-        # We can avoid the issue by implementing interpolation here in the SimpleResolver. In theory, the download function
-        # of SimpleResolver will never get hit on balineseOld... so only this interpolate function needs to exist.
+        # CTR START HERE -- Need to finish this next, for use on balineseOld.
+        # In theory, the download function of SimpleResolver will never be hit
+        # on balineseOld... so only this interpolate function needs to exist.
         return effective_pom
 
 
@@ -529,7 +529,7 @@ class Artifact:
     def _checksum(self, suffix, func):
         p = self.resolve()
         checksum_path = p.parent / f"{p.name}.{suffix}"
-        return io.text(checksum_path) or func(io.binary(p)).hexdigest()
+        return iogo.text(checksum_path) or func(iogo.binary(p)).hexdigest()
 
 
 class Dependency:
@@ -635,7 +635,7 @@ class POM(XML):
         project = self.env.project(self.groupId, self.artifactId)
         return project.at_version(self.version).artifact(packaging="pom")
 
-    def parent(self) -> Optional("POM"):
+    def parent(self) -> Optional["POM"]:
         """
         Get POM data for this POM's parent POM, or None if no parent is declared.
         """

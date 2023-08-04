@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Union
+from typing import Union
 
 
 def read(p: Path, mode: str) -> Union[str, bytes]:
