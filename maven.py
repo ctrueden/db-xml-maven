@@ -64,6 +64,10 @@ class Resolver(ABC):
         """
         ...
 
+    # CTR TODO: Consider whether to support pom_or_artifact: Union["Artifact", "POM"].
+    # To do it, the SimpleResolver logic wouldn't change much, but the SysCallResolver
+    # would need extra logic: when given a POM, it would need to dump the string to a
+    # temp file on disk and then pass that file to mvn via -f.
     @abstractmethod
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
         """
@@ -101,22 +105,55 @@ class SimpleResolver(Resolver):
 
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
-    def interpolate(self, pom_artifact: "Artifact") -> "POM":
-        # NOTES
+    def interpolate(self, pom_artifact: Union["Artifact", "POM"]) -> "POM":
+        # Resolve the chain of POMs.
+        pom = (
+            pom_artifact
+            if isinstance(pom_artifact, POM)
+            else POM(pom_artifact.resolve(), self.env)
+        )
+        poms = []
+        while pom:
+            poms.append(pom)
+            pom = pom_artifact.parent()
+
+        # Merge the POM chain from the eldest parent onward.
+        effective_pom = poms.pop()
+        while poms:
+            flatten(effective_pom, poms.pop().getroot())
+
+        # Apply profiles.
+        # Q: Does this happen before parents are merged? Read the Maven docs and code.
         # Activate certain profiles as well during interpolation:
         # - activeByDefault: always
         # - <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
         # - <jdk>: tricky...
+        # - <file>: we could, but... maybe shouldn't?
         # - others: no
-        pom = pom_artifact.component.pom()
-        # CTR FIXME do the interpolation ourselves!
-        # CTR START HERE -- This is the next thing to work on, because balineseOld runs mvn 3.6.0, but
+        pass
+
+        # Integrate any import scope BOMs.
+        # CTR FIXME: use a nicer xpath expression here to select dependencies with <scope>import</scope>>
+        # $xp->findnodes( '//@att[.=~ /^v.$/]'); # returns the list of attributes att whose value matches ^v.$
+        # Q: what order does Maven do things in? flatten parents, then imports? or vice versa?
+        # Maybe the imports happen at each level, as parents are incorporated?
+        for dep in pom.elements("dependencyManagement/dependencies/dependency"):
+            if dep.scope == "import":
+                assert dep.type == "pom"
+                flatten(effective_pom, dep.artifact, imported=True)
+
+        # 3. Interpolate property values.
+        props = {prop.tagname: prop.text for prop in pom.elements("properties/*")}
+        def prop_value(props, k):
+            if not k in props: return None
+            v = props[k]
+            re.match
+
+        # CTR START HERE -- Need to finish this next, because balineseOld runs mvn 3.6.0, but
         # help:effective-pom requires 3.6.3+, at least some versions of the maven-help-plugin do which end up getting used.
         # We can avoid the issue by implementing interpolation here in the SimpleResolver. In theory, the download function
         # of SimpleResolver will never get hit on balineseOld... so only this interpolate function needs to exist.
-        #
-        # It's probably time to start writing unit tests... :-(
-        raise RuntimeError("Unimplemented")
+        return effective_pom
 
 
 class SysCallResolver(Resolver):
@@ -130,7 +167,7 @@ class SysCallResolver(Resolver):
         self.mvn_flags = ["-B", "-T8"]
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        print(f"Downloading artifact: {artifact}")
+        print(f"[INFO] Downloading artifact: {artifact}")
         assert artifact.env.repo_cache
         assert artifact.groupId
         assert artifact.artifactId
@@ -156,7 +193,7 @@ class SysCallResolver(Resolver):
         return artifact.cached_path
 
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
-        print(f"Interpolating POM: {pom_artifact}")
+        print(f"[DEBUG] Interpolating POM: {pom_artifact}")
         assert pom_artifact.env.repo_cache
         output = self._mvn(
             "help:effective-pom",
@@ -513,7 +550,7 @@ class Dependency:
         self.exclusions: Tuple[Project] = tuple() if exclusions is None else tuple(exclusions)
 
     def __str__(self):
-        return coord2str(self.groupId, self.artifactId, self.version, self.classifier, self.packaging, self.scope, self.optional)
+        return coord2str(self.groupId, self.artifactId, self.version, self.classifier, self.type, self.scope, self.optional)
 
     @property
     def env(self) -> Environment:
@@ -536,7 +573,7 @@ class Dependency:
         return self.artifact.classifier
 
     @property
-    def packaging(self) -> str:
+    def type(self) -> str:
         return self.artifact.packaging
 
 
@@ -590,6 +627,43 @@ class POM(XML):
     """
     Convenience wrapper around a Maven POM XML document.
     """
+
+    def artifact(self) -> Artifact:
+        """
+        Get an Artifact object representing this POM.
+        """
+        project = self.env.project(self.groupId, self.artifactId)
+        return project.at_version(self.version).artifact(packaging="pom")
+
+    def parent(self) -> Optional("POM"):
+        """
+        Get POM data for this POM's parent POM, or None if no parent is declared.
+        """
+        if not self.element("parent"): return None
+
+        g = self.value("parent/groupId")
+        a = self.value("parent/artifactId")
+        v = self.value("parent/version")
+        assert g and a and v
+        relativePath = self.value("parent/relativePath")
+
+        if (
+            isinstance(self.source, Path) and
+            relativePath and
+            (parent_path := self.source / relativePath).exists()
+        ):
+            # Use locally available parent POM file.
+            parent_pom = POM(parent_path, self.env)
+            if (
+                g == parent_pom.groupId and
+                a == parent_pom.artifactId and
+                v == parent_pom.version
+            ):
+                return parent_pom
+            print("[DEBUG] Ignoring non-matching GAV for relative parent path: {parent_path}")
+
+        pom_artifact = self.env.project(g, a).at_version(v).artifact(packaging="pom")
+        return POM(pom_artifact.resolve(), self.env)
 
     @property
     def groupId(self) -> Optional[str]:

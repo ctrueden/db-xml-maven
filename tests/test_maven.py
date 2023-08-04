@@ -37,10 +37,11 @@ class MavenTest(TestCase):
     def lockdown(self, xml):
         # Ignore elements with non-determinstic values such as datestamps.
         ignored_elements = (
-            "build/pluginManagement/plugins/plugin/configuration/archive/manifestEntries",
-            "build/pluginManagement/plugins/plugin/executions/execution/configuration/archive/manifestEntries",
+            "build/pluginManagement/plugins/plugin/configuration/archive/manifestEntries/Implementation-Date",
+            "build/pluginManagement/plugins/plugin/executions/execution/configuration/archive/manifestEntries/Implementation-Date",
         )
         for p in ignored_elements:
             for el in xml.elements(p):
+                print(f"IGNORING {el}")
                 el.text = "IGNORED"
         return xml

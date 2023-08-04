@@ -125,7 +125,6 @@ class FilesCollection:
         # Now that we have our list of plugins, we can generate the corresponding XML elements.
         # CTR FIXME: sort by artifactId? Or by groupId/artifactId? Or by something else?
         for _, artifacts in plugins.items():
-            # CTR FIXME: Really? I don't need the GACP tuple at all? Hmm...
             self._populate_plugin(tree, artifacts)
 
         return etree.tostring(tree, xml_declaration=True, encoding="utf-8").decode()
