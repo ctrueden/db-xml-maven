@@ -7,14 +7,13 @@ interpolation works, and test the correctness of jgo's implementation.
 """
 
 import random
-import sys
 from pathlib import Path
 
 from lxml import etree
 
 # -- Constants --
 
-OUTPUT_DIR = Path("thicket")
+OUTPUT_DIR = Path(".")
 TEMPLATE: bytes = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" \
@@ -63,7 +62,7 @@ def random_version() -> str:
     return str(v)
 
 
-def generate_pom(name, version=None, ancestor_count=ANCESTOR_COUNT, depth=0):
+def generate_pom(name, packaging=None, version=None, ancestor_count=ANCESTOR_COUNT, depth=0):
     # NB: The remove_blank_text=True option is needed to pretty-print the XML output:
     # https://lxml.de/FAQ.html#why-doesn-t-the-pretty-print-option-reformat-my-xml-output
     root = etree.fromstring(TEMPLATE, parser=etree.XMLParser(remove_blank_text=True))
@@ -75,12 +74,13 @@ def generate_pom(name, version=None, ancestor_count=ANCESTOR_COUNT, depth=0):
         create_child(parent, "artifactId", parent_name)
         create_child(parent, "version", v)
         create_child(parent, "relativePath")
-        generate_pom(parent_name, version=v, ancestor_count=ancestor_count-1, depth=depth+1)
+        generate_pom(parent_name, packaging="pom", version=v, ancestor_count=ancestor_count-1, depth=depth+1)
     else:
         create_child(root, "groupId", GROUP_ID)
 
     create_child(root, "artifactId", name)
     create_child(root, "version", version or random_version())
+    if packaging: create_child(root, "packaging", packaging)
 
     bom_count = min(MAX_IMPORTS - depth, random.randint(0, MAX_IMPORTS))
     dep_mgmt = create_child(root, "dependencyManagement")
@@ -95,7 +95,7 @@ def generate_pom(name, version=None, ancestor_count=ANCESTOR_COUNT, depth=0):
         create_child(dep, "version", v)
         create_child(dep, "type", "pom")
         create_child(dep, "scope", "import")
-        generate_pom(bom_name, version=v, ancestor_count=ancestor_count, depth=depth+1)
+        generate_pom(bom_name, packaging="pom", version=v, ancestor_count=ancestor_count, depth=depth+1)
 
     # Manage some dependencies.
     properties = None
