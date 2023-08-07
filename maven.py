@@ -64,14 +64,52 @@ class Resolver(ABC):
         """
         ...
 
-    # CTR TODO: Consider whether to support pom_or_artifact: Union["Artifact", "POM"].
-    # To do it, the SimpleResolver logic wouldn't change much, but the SysCallResolver
-    # would need extra logic: when given a POM, it would need to dump the string to a
-    # temp file on disk and then pass that file to mvn via -f.
     @abstractmethod
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
         """
         Flatten and interpolate the POM, like the help:effective-pom goal does.
+
+        The workhorse of Maven in this regard is the maven-model-builder:
+        https://maven.apache.org/ref/3.3.9/maven-model-builder/
+
+        Implementations of this method should strive to perform at least the
+        following steps, as described in the maven-model-builder documentation:
+
+        phase 1:
+        * profile activation
+        * model normalization - merge duplicates
+          - Merges duplicate elements like multiple declarations of the same
+            build plugin in the specified model.
+        * profile injection
+          - Merges values from the specified profile into the given model.
+            Implementations are expected to keep the profile and model
+            completely decoupled by injecting deep copies rather than the
+            original objects from the profile.
+        * parent resolution until super-pom
+        * inheritance assembly
+          - Merges values from the specified parent model into the given child
+            model. Implementations are expected to keep parent and child
+            completely decoupled by injecting deep copies of objects into the
+            child rather than the original objects from the parent.
+        * model interpolation
+          - Model Interpolation consists in replacing ${...} with calculated value.
+        * url normalization
+          - Normalizes a URL to remove the ugly parent references "../" that
+            got potentially inserted by URL adjustment during model
+            inheritance.
+        phase 2:
+        * model path translation
+          - Resolves relative paths of a model against a specific base directory.
+        * plugin management injection
+          - Handles injection of plugin management into the model.
+        * dependency management import
+          - for dependencies of type pom in the <dependencyManagement> section
+        * dependency management injection
+          - Handles injection of dependency management into the model.
+        * model normalization - inject default values
+          - Sets default values in the specified model that for technical
+            reasons cannot be set directly in the Modello definition.
+
         :param pom_artifact: Artifact object referencing the POM of a component.
         :return: The POM content.
         """
@@ -105,50 +143,107 @@ class SimpleResolver(Resolver):
 
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
+    def _inject(self, source: ElementTree.Element, target: ElementTree.Element) -> None:
+        """
+        From https://maven.apache.org/pom.html#plugins:
+
+        The default behavior is to merge the content of the configuration
+        element according to element name. If the child POM has a particular
+        element, that value becomes the effective value. if the child POM does
+        not have an element, but the parent does, the parent value becomes the
+        effective value. Note that this is purely an operation on XML; no code
+        or configuration of the plugin itself is involved. Only the elements,
+        not their values, are involved.
+
+        You can control how child POMs inherit configuration from parent POMs
+        by adding attributes to the children of the configuration element. The
+        attributes are combine.children and combine.self. Use these attributes
+        in a child POM to control how Maven combines plugin configuration from
+        the parent with the explicit configuration in the child.
+        """
+        pass
+
     def interpolate(self, pom_artifact: Union["Artifact", "POM"]) -> "POM":
-        # Resolve the chain of POMs.
+        # Resolve the POM.
         pom = (
             pom_artifact
             if isinstance(pom_artifact, POM)
             else POM(pom_artifact.resolve(), self.env)
         )
-        poms = []
-        while pom:
-            poms.append(pom)
-            pom = pom_artifact.parent()
 
-        # Merge the POM chain from the eldest parent onward.
-        effective_pom = poms.pop()
-        while poms:
-            self.interpolate(effective_pom, poms.pop().getroot())
+        # https://maven.apache.org/ref/3.3.9/maven-model-builder/
 
-        # Apply profiles.
-        # Q: Does this happen before parents are merged? Read the Maven docs and code.
-        # Activate certain profiles as well during interpolation:
+        # == PHASE 1 ==
+
+        # -- profile activation --
+
         # - activeByDefault: always
         # - <os>: yes, evaluate it! err... evaluate it once per supported platform? And have one interpolated POM per platform?
         # - <jdk>: tricky...
         # - <file>: we could, but... maybe shouldn't?
         # - others: no
-        pass
 
-        # Integrate any import scope BOMs.
-        # CTR FIXME: use a nicer xpath expression here to select dependencies with <scope>import</scope>>
-        # $xp->findnodes( '//@att[.=~ /^v.$/]'); # returns the list of attributes att whose value matches ^v.$
-        # Q: what order does Maven do things in? flatten parents, then imports? or vice versa?
-        # Maybe the imports happen at each level, as parents are incorporated?
-        for dep in pom.elements("dependencyManagement/dependencies/dependency"):
-            if dep.scope == "import":
-                assert dep.type == "pom"
-                self.interpolate(effective_pom, dep.artifact, imported=True)
+        # -- model normalization - merge duplicates --
+        # Merges duplicate elements like multiple declarations of the same
+        # build plugin in the specified model.
+        # TODO - Implement this if behavior is bad without it.
 
-        # 3. Interpolate property values.
+        # -- profile injection --
+        # Merges values from the specified profile into the given model.
+        # Implementations are expected to keep the profile and model completely
+        # decoupled by injecting deep copies rather than the original objects
+        # from the profile.
+
+        # Apply profiles.
+        # Q: Does this happen before parents are merged? Read the Maven docs and code.
+
+        # -- parent resolution until super-pom --
+
+        # -- inheritance assembly --
+        # Merges values from the specified parent model into the given child
+        # model. Implementations are expected to keep parent and child
+        # completely decoupled by injecting deep copies of objects into the
+        # child rather than the original objects from the parent.
+
+        # -- model interpolation --
+        # Model Interpolation consists in replacing ${...} with calculated value.
+
         props = {prop.tagname: prop.text for prop in pom.elements("properties/*")}
 
         def prop_value(props, k):
             if not k in props: return None
             v = props[k]
             re.match
+
+        # -- url normalization --
+        # Normalizes a URL to remove the ugly parent references "../" that
+        # got potentially inserted by URL adjustment during model inheritance.
+
+        # == PHASE 2 ==
+
+        # -- model path translation --
+        # Resolves relative paths of a model against a specific base directory.
+
+        # -- plugin management injection --
+        # Handles injection of plugin management into the model.
+
+        # -- dependency management import --
+        # For dependencies of type pom in the <dependencyManagement> section.
+
+        # Integrate any import scope BOMs.
+        # CTR FIXME: use a nicer xpath expression here to select dependencies with <scope>import</scope>>
+        # $xp->findnodes( '//@att[.=~ /^v.$/]'); # returns the list of attributes att whose value matches ^v.$
+        for dep in pom.elements("dependencyManagement/dependencies/dependency"):
+            if dep.scope == "import":
+                assert dep.type == "pom"
+                self.interpolate(effective_pom, dep.artifact, imported=True)
+
+        # -- dependency management injection --
+        # Handles injection of dependency management into the model.
+
+        # -- model normalization - inject default values --
+        # Sets default values in the specified model that for technical reasons
+        # cannot be set directly in the Modello definition.
 
         # CTR START HERE -- Need to finish this next, for use on balineseOld.
         # In theory, the download function of SimpleResolver will never be hit
@@ -192,6 +287,9 @@ class SysCallResolver(Resolver):
         assert artifact.cached_path and artifact.cached_path.exists()
         return artifact.cached_path
 
+    # CTR TODO: Consider whether to support pom_or_artifact: Union["Artifact", "POM"].
+    # Would need extra logic to do it: when given a POM, would need to dump the
+    # string to a temp file on disk and then pass that file to mvn via -f.
     def interpolate(self, pom_artifact: "Artifact") -> "POM":
         print(f"[DEBUG] Interpolating POM: {pom_artifact}")
         assert pom_artifact.env.repo_cache
