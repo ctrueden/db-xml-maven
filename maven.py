@@ -6,7 +6,7 @@ from os import environ
 from pathlib import Path
 from re import findall, match
 from subprocess import run
-from typing import Any, Dict, Optional, List, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 from xml.etree import ElementTree
 
 import requests
@@ -35,7 +35,15 @@ def ts2dt(ts: str) -> datetime:
     return datetime(*map(int, m.groups()))  # noqa
 
 
-def coord2str(groupId: str, artifactId: str, version: str = None, classifier: str = None, packaging: str = None, scope: str = None, optional: bool = False):
+def coord2str(
+    groupId: str,
+    artifactId: str,
+    version: str = None,
+    classifier: str = None,
+    packaging: str = None,
+    scope: str = None,
+    optional: bool = False
+):
     # We match the order from the dependency:list goal: G:A:P:C:V:S.
     s = f"{groupId}:{artifactId}"
     if packaging: s += f":{packaging}"
@@ -102,188 +110,10 @@ class SimpleResolver(Resolver):
 
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
-    @staticmethod
-    def _is_active_profile(el):
-        activation = el.find("activation")
-        if activation is None: return False
-
-        for condition in activation:
-            if condition.tagname == "activeByDefault":
-                if condition.text == "true": return True
-
-            elif condition.tagname == "jdk":
-                # TODO: Tricky...
-                pass
-
-            elif condition.tagname == "os":
-                # <name>Windows XP</name>
-                # <family>Windows</family>
-                # <arch>x86</arch>
-                # <version>5.1.2600</version>
-                # TODO: The db.xml generator would benefit from being able to glean
-                # platform-specific dependencies. We can support it in the SimpleResolver
-                # by inventing our own `platforms` field in the Dependency class and
-                # changing this method to return a list of platforms rather than True.
-                # But the SysCallResolver won't be able to populate it naively.
-                pass
-
-            elif condition.tagname == "property":
-                # <name>sparrow-type</name>
-                # <value>African</value>
-                pass
-
-            elif condition.tagname == "file":
-                # <file>
-                # <exists>${basedir}/file2.properties</exists>
-                # <missing>${basedir}/file1.properties</missing>
-                pass
-
-        return False
-
-    @staticmethod
-    def _merge_deps(source: List["Dependency"], target: Dict["GACP", "Dependency"]) -> None:
-        for dep in source:
-            k = (dep.groupId, dep.artifactId, dep.classifier, dep.packaging)
-            if k not in target: target[k] = dep
-
-    @staticmethod
-    def _merge_props(source: Dict[str, str], target: Dict[str, str]) -> None:
-        for k, v in source.items():
-            if not k in target: target[k] = v
-
-    def _merge(self, pom: "POM", model: "Model") -> None:
-        """
-        Transfer metadata from POM source to target model.
-        For now, we handle only dependencies, dependencyManagement, and properties.
-        """
-        self._merge_deps(pom.dependencies(), model.deps)
-        self._merge_deps(pom.dependencies(managed=True), model.dep_mgmt)
-        self._merge_props(pom.properties, model.props)
-
-    def _build_model(self, pom: "POM") -> "Model":
-        """
-        Builds a Maven metadata model from the given POM.
-
-        :param pom: A source POM from which to extract metadata (e.g. dependencies).
-        """
-
-        # Construct the model object into which metadata will be populated.
-        model = Model()
-
-        # Transfer metadata from POM source to target model.
-        # For now, we handle only dependencies, dependencyManagement, and properties.
-        self._merge(pom, model)
-
-        # The following steps are adapted from the maven-model-builder:
-        # https://maven.apache.org/ref/3.3.9/maven-model-builder/
-
-        # -- profile activation and injection --
-
-        # Compute active profiles.
-        active_profiles = [
-            profile
-            for profile in pom.elements("profiles/profile")
-            if self._is_active_profile
-        ]
-
-        # Merge values from the active profiles into the model.
-        for profile in active_profiles:
-            profile_deps = profile.find("dependencies/dependency")
-            self._merge_deps(profile_deps, model.deps)
-
-        # -- parent resolution and inheritance assembly --
-
-        # Merge values up the parent chain into the current model.
-        parent = pom.parent
-        while parent:
-            self._merge(parent, model)
-            parent = parent.parent
-
-        # -- model interpolation --
-        # Replace ${...} expressions with calculated values.
-
-        @staticmethod
-        def evaluate(
-            expression: str,
-            props: Dict[str, str],
-            visited: Optional[Set[str]] = None
-        ) -> str:
-            props_referenced = set(findall("\\${([^}]*)}", expression))
-            if not props_referenced: return expression
-
-            value = expression
-            for prop_reference in props_referenced:
-                replacement = propvalue(props, prop_reference, visited)
-                if replacement is None:
-                    # NB: Leave "${...}" expressions alone when property is absent.
-                    # This matches Maven behavior, but it still makes me nervous.
-                    continue
-
-                value = value.replace("${" + prop_reference + "}", replacement)
-                props[k] = value
-
-            return value
-
-        @staticmethod
-        def propvalue(
-            propname: str,
-            props: Dict[str, str],
-            visited: Optional[Set[str]] = None
-        ) -> Optional[str]:
-            if visited is None: visited = set()
-            if propname in visited:
-                raise ValueError("Infinite reference loop for property '{propname}'")
-            visited.add(propname)
-
-            expression = props.get(propname, None)
-            return None if expression is None else evaluate(expression, props, visited)
-
-        # Interpolate property values.
-        for k in model.props: propvalue(model.props, k)
-
-        # Interpolate dependency version values.
-        deps_and_dep_mgmt = list(model.deps.values()) + list(model.dep_mgmt.values())
-        for dep in deps_and_dep_mgmt:
-            v = dep.version
-            if (v := dep.version) is None: continue
-            dep.set_version(evaluate(v))
-
-        # -- dependency management import --
-
-        # For dependencies of type pom in the <dependencyManagement> section.
-        # These BOMs need to be *fully resolved* before being merged.
-        # I.e.: version props won't be a thing anymore for them.
-        # So: this part should be a recursive call, ending with a resolved
-        # depMgmt, which can then be merged here.
-        for k, dep in model.dep_mgmt:
-            if dep.scope != "import" and dep.type == "pom": continue
-
-            # Load the POM to import.
-            bom_project = self.env.project(dep.groupId, dep.artifactId)
-            bom_pom = bom_project.at_version(dep.version).pom()
-
-            # Fully build the BOM's model.
-            bom_model = self._build_model(bom_pom)
-
-            # Merge the BOM model's <dependencyManagement> into this model.
-            self._merge_deps(bom_model.dep_mgmt.values(), model.dep_mgmt)
-
-        # -- dependency management injection --
-
-        # Handles injection of dependency management into the model.
-        for gacp, dep in model.deps:
-            if dep.version is not None: continue
-            # This dependency's version is still unset; use managed version.
-            version = model.dep_mgmt.get(gacp, None)
-            if version is None:
-                raise ValueError("No version available for dependency {dep}")
-            dep.set_version(version)
-
-        return model
-
     def dependencies(self, component: "Component") -> List["Dependency"]:
-        model = self._build_model(component.pom())
-        return model.deps.values()
+        model = Model(component.env, component.pom())
+        # FIXME: Transitive dependencies?
+        return list(model.deps.values())
 
 
 class SysCallResolver(Resolver):
@@ -324,7 +154,7 @@ class SysCallResolver(Resolver):
 
     def dependencies(self, component: "Component") -> List["Dependency"]:
         # Invoke the dependency:list goal, direct dependencies only.
-        print(f"[DEBUG] Getting dependencies: {pom_artifact}")
+        print(f"[DEBUG] Getting dependencies: {component}")
         pom_artifact = component.artifact(packaging="pom")
         assert pom_artifact.env.repo_cache
         output = self._mvn(
@@ -518,7 +348,6 @@ class Project:
         # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
         if locked: raise RuntimeError("Locked snapshot reporting is unimplemented")
         metadata = self.metadata()
-        versions = metadata.versions
         return [
             self.at_version(v)
             for v in metadata.versions
@@ -692,7 +521,7 @@ class Dependency:
             artifact: Artifact,
             scope: str = DEFAULT_SCOPE,
             optional: bool = False,
-            exclusions: Sequence[Project] = None
+            exclusions: Iterable[Project] = None
     ):
         self.artifact = artifact
         self.scope = scope
@@ -728,18 +557,6 @@ class Dependency:
 
     def set_version(self, version: str) -> None:
         self.artifact.component.version = version
-
-
-GACP = Tuple[str, str, str, str]
-
-
-class Model:
-    """
-    A minimal Maven metadata model, tracking only dependencies and properties.
-    """
-    deps: Dict[GACP, Dependency] = []
-    dep_mgmt: Dict[GACP, Dependency] = []
-    props: Dict[str, str] = []
 
 
 class XML:
@@ -884,7 +701,7 @@ class POM(XML):
 
     @property
     def properties(self) -> Dict[str, str]:
-        return {el.tagname: el.text for el in self.elements("properties/*")}
+        return {el.tag: el.text for el in self.elements("properties/*")}
 
     def dependencies(self, managed: bool = False) -> List[Dependency]:
         xpath = "dependencies/dependency"
@@ -893,6 +710,7 @@ class POM(XML):
             self.env.dependency(el)
             for el in self.elements(xpath)
         ]
+
 
 class Metadata(ABC):
 
@@ -956,11 +774,12 @@ class MetadataXML(XML, Metadata):
 
     @property
     def lastVersion(self) -> Optional[str]:
-        return vs[-1] if (vs := self.versions()) else None
+        return vs[-1] if (vs := self.versions) else None
 
     @property
     def release(self) -> Optional[str]:
         return self.value("versioning/release")
+
 
 class Metadatas(Metadata):
     """
@@ -969,7 +788,7 @@ class Metadatas(Metadata):
     describing the same project, across multiple local repository cache and storage directories.
     """
 
-    def __init__(self, metadatas: Sequence[Metadata]):
+    def __init__(self, metadatas: Iterable[Metadata]):
         self.metadatas: List[Metadata] = sorted(metadatas, key=lambda m: m.lastUpdated)
         for a, b in combinations(self.metadatas, 2):
             assert a.groupId == b.groupId and a.artifactId == b.artifactId
@@ -1001,3 +820,197 @@ class Metadatas(Metadata):
     @property
     def release(self) -> Optional[str]:
         return next((m.release for m in reversed(self.metadatas) if m.release), None)
+
+
+GACT = Tuple[str, str, str, str]
+
+
+class Model:
+    """
+    A minimal Maven metadata model, tracking only dependencies and properties.
+    """
+
+    def __init__(self, env: Environment, pom: "POM"):
+        """
+        Builds a Maven metadata model from the given POM.
+
+        :param pom: A source POM from which to extract metadata (e.g. dependencies).
+        """
+        self.env = env
+
+        # Transfer raw metadata from POM source to target model.
+        # For now, we handle only dependencies, dependencyManagement, and properties.
+        self.deps: Dict[GACT, Dependency] = {}
+        self.dep_mgmt: Dict[GACT, Dependency] = {}
+        self.props: Dict[str, str] = {}
+        self._merge(pom)
+
+        # The following steps are adapted from the maven-model-builder:
+        # https://maven.apache.org/ref/3.3.9/maven-model-builder/
+
+        # -- profile activation and injection --
+
+        # Compute active profiles.
+        active_profiles = [
+            profile
+            for profile in pom.elements("profiles/profile")
+            if Model._is_active_profile(profile)
+        ]
+
+        # Merge values from the active profiles into the model.
+        for profile in active_profiles:
+            profile_dep_els = profile.findall("dependencies/dependency")
+            profile_deps = [self.env.dependency(el) for el in profile_dep_els]
+            self._merge_deps(profile_deps)
+
+            profile_dep_mgmt_els = profile.findall("dependencyManagement/dependencies/dependency")
+            profile_dep_mgmt = [self.env.dependency(el) for el in profile_dep_mgmt_els]
+            self._merge_deps(profile_dep_mgmt, managed=True)
+
+            profile_props_els = profile.findall("properties")
+            profile_props = {el.tag: el.text for el in profile_props_els}
+            self._merge_props(profile_props)
+
+        # -- parent resolution and inheritance assembly --
+
+        # Merge values up the parent chain into the current model.
+        parent = pom.parent
+        while parent:
+            self._merge(parent)
+            parent = parent.parent
+
+        # -- model interpolation --
+
+        # Replace ${...} expressions in property values.
+        for k in self.props: Model._propvalue(k, self.props)
+
+        # Replace ${...} expressions in dependency version values.
+        for dep in list(self.deps.values()) + list(self.dep_mgmt.values()):
+            v = dep.version
+            if v is None: continue
+            dep.set_version(Model._evaluate(v, self.props))
+
+        # -- dependency management import --
+
+        # NB: BOM-type dependencies imported in the <dependencyManagement> section are
+        # fully interpolated before merging their dependencyManagement into this model,
+        # without any consideration for differing property values set in this POM's
+        # inheritance chain. Therefore, unlike with parent POMs, dependency versions
+        # defined indirectly via version properties cannot be overridden by setting
+        # those version properties in the consuming POM!
+        for k, dep in self.dep_mgmt:
+            if dep.scope != "import" and dep.type == "pom": continue
+
+            # Load the POM to import.
+            bom_project = self.env.project(dep.groupId, dep.artifactId)
+            bom_pom = bom_project.at_version(dep.version).pom()
+
+            # Fully build the BOM's model, agnostic of this one.
+            bom_model = Model(env, bom_pom)
+
+            # Merge the BOM model's <dependencyManagement> into this model.
+            self._merge_deps(bom_model.dep_mgmt.values(), managed=True)
+
+        # -- dependency management injection --
+
+        # Handles injection of dependency management into the model.
+        for gacp, dep in self.deps:
+            if dep.version is not None: continue
+            # This dependency's version is still unset; use managed version.
+            version = self.dep_mgmt.get(gacp, None)
+            if version is None:
+                raise ValueError("No version available for dependency {dep}")
+            dep.set_version(version)
+
+    def _merge_deps(self, source: Iterable[Dependency], managed: bool = False) -> None:
+        target = self.dep_mgmt if managed else self.deps
+        for dep in source:
+            k = (dep.groupId, dep.artifactId, dep.classifier, dep.type)
+            if k not in target: target[k] = dep
+
+    def _merge_props(self, source: Dict[str, str]) -> None:
+        for k, v in source.items():
+            if k not in self.props: self.props[k] = v
+
+    def _merge(self, pom: POM) -> None:
+        """
+        Transfer metadata from POM source to target model.
+        For now, we handle only dependencies, dependencyManagement, and properties.
+        """
+        self._merge_deps(pom.dependencies())
+        self._merge_deps(pom.dependencies(managed=True), managed=True)
+        self._merge_props(pom.properties)
+
+    @staticmethod
+    def _is_active_profile(el):
+        activation = el.find("activation")
+        if activation is None: return False
+
+        for condition in activation:
+            if condition.tag == "activeByDefault":
+                if condition.text == "true": return True
+
+            elif condition.tag == "jdk":
+                # TODO: Tricky...
+                pass
+
+            elif condition.tag == "os":
+                # <name>Windows XP</name>
+                # <family>Windows</family>
+                # <arch>x86</arch>
+                # <version>5.1.2600</version>
+                # TODO: The db.xml generator would benefit from being able to glean
+                # platform-specific dependencies. We can support it in the SimpleResolver
+                # by inventing our own `platforms` field in the Dependency class and
+                # changing this method to return a list of platforms rather than True.
+                # But the SysCallResolver won't be able to populate it naively.
+                pass
+
+            elif condition.tag == "property":
+                # <name>sparrow-type</name>
+                # <value>African</value>
+                pass
+
+            elif condition.tag == "file":
+                # <file>
+                # <exists>${basedir}/file2.properties</exists>
+                # <missing>${basedir}/file1.properties</missing>
+                pass
+
+        return False
+
+    @staticmethod
+    def _evaluate(
+            expression: str,
+            props: Dict[str, str],
+            visited: Optional[Set[str]] = None
+    ) -> str:
+        props_referenced = set(findall("\\${([^}]*)}", expression))
+        if not props_referenced: return expression
+
+        value = expression
+        for prop_reference in props_referenced:
+            replacement = Model._propvalue(prop_reference, props, visited)
+            if replacement is None:
+                # NB: Leave "${...}" expressions alone when property is absent.
+                # This matches Maven behavior, but it still makes me nervous.
+                continue
+            value = value.replace("${" + prop_reference + "}", replacement)
+        return value
+
+    @staticmethod
+    def _propvalue(
+            propname: str,
+            props: Dict[str, str],
+            visited: Optional[Set[str]] = None
+    ) -> Optional[str]:
+        if visited is None: visited = set()
+        if propname in visited:
+            raise ValueError("Infinite reference loop for property '{propname}'")
+        visited.add(propname)
+
+        expression = props.get(propname, None)
+        if expression is None: return None
+        evaluated = Model._evaluate(expression, props, visited)
+        props[propname] = evaluated
+        return evaluated
