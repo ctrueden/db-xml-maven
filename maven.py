@@ -919,7 +919,7 @@ class Model:
         # defined indirectly via version properties cannot be overridden by setting
         # those version properties in the consuming POM!
         for dep in self.dep_mgmt.values():
-            if dep.scope != "import" or dep.type != "pom": continue
+            if not (dep.scope == "import" and dep.type == "pom"): continue
 
             # Load the POM to import.
             bom_project = self.env.project(dep.groupId, dep.artifactId)
@@ -944,6 +944,31 @@ class Model:
             dep.set_version(managed.version)
 
         debug(f"{gav}: model construction complete")
+
+    def dependencies(self, transitive: bool = True) -> List[Dependency]:
+        deps: Dict[GACT, Dependency] = {}
+
+        # Add the direct dependencies.
+        deps.update(self.deps)
+
+        if not transitive: return list(deps.values())
+
+        # Add the transitive dependencies (i.e. dependencies of dependencies).
+        for dep in self.deps.values():
+            dep_pom = dep.artifact.component.pom()
+            dep_model = Model(self.env, dep_pom)
+            dep_deps = dep_model.dependencies(transitive=True).values()
+            for dep_dep in dep_deps:
+                gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
+                if gact in deps: continue  # Already know about this dependency.
+                # We found a new transitive dependency. Record it!
+                deps[gact] = dep_dep
+                # If the transitive dependency has a managed version, prefer it.
+                managed_dep = self.dep_mgmt.get(gact, None)
+                if managed_dep is not None:
+                    dep.set_version(managed_dep.version)
+
+        return list(deps.values())
 
     def _merge_deps(self, source: Iterable[Dependency], managed: bool = False) -> None:
         target = self.dep_mgmt if managed else self.deps
