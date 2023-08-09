@@ -957,7 +957,7 @@ class Model:
         for dep in self.deps.values():
             dep_pom = dep.artifact.component.pom()
             dep_model = Model(self.env, dep_pom)
-            dep_deps = dep_model.dependencies(transitive=True).values()
+            dep_deps = dep_model.dependencies(transitive=True)
             for dep_dep in dep_deps:
                 gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
                 if gact in deps: continue  # Already know about this dependency.
@@ -1064,9 +1064,12 @@ class Model:
         return evaluated
 
 
-def go():
+# CTR TEMP: For debugging.
+if __name__ == "__main__":
     env = Environment()
     sjc = env.project("org.scijava", "scijava-common")
     sjc94 = sjc.at_version("2.94.2")
     #sjc96 = sjc.at_version("2.96.0")
-    return Model(env, sjc94.pom())
+    model = Model(env, sjc94.pom())
+    for dep in model.dependencies():
+        print(dep)
