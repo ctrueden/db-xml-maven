@@ -572,7 +572,8 @@ class XML:
         XML._strip_ns(self.tree.getroot())
 
     def dump(self, el: ElementTree.Element = None) -> str:
-        return ElementTree.tostring(el if el else self.tree.getroot()).decode()
+        if el is None: el = self.tree.getroot()
+        return ElementTree.tostring(el).decode()
 
     def elements(self, path: str) -> List[ElementTree.Element]:
         return self.tree.findall(path)
@@ -586,7 +587,8 @@ class XML:
         return [el.text for el in self.elements(path)]
 
     def value(self, path: str) -> Optional[str]:
-        return el.text if (el := self.element(path)) else None
+        el = self.element(path)
+        return None if el is None else el.text
 
     @staticmethod
     def _strip_ns(el: ElementTree.Element) -> None:
@@ -874,10 +876,10 @@ class Model:
         # -- parent resolution and inheritance assembly --
 
         # Merge values up the parent chain into the current model.
-        parent = pom.parent
+        parent = pom.parent()
         while parent:
             self._merge(parent)
-            parent = parent.parent
+            parent = parent.parent()
 
         # -- model interpolation --
 
