@@ -20,6 +20,18 @@ DEFAULT_PACKAGING = "jar"
 DEFAULT_SCOPE = "compile"
 
 
+# -- Logging --
+
+
+# CTR FIXME use a real logger
+
+def info(msg):
+    print("[INFO] " + msg)
+
+def debug(msg):
+    print("[DEBUG] " + msg)
+
+
 # -- Functions --
 
 def ts2dt(ts: str) -> datetime:
@@ -127,7 +139,7 @@ class SysCallResolver(Resolver):
         self.mvn_flags = ["-B", "-T8"]
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        print(f"[INFO] Downloading artifact: {artifact}")
+        info(f"Downloading artifact: {artifact}")
         assert artifact.env.repo_cache
         assert artifact.groupId
         assert artifact.artifactId
@@ -154,7 +166,6 @@ class SysCallResolver(Resolver):
 
     def dependencies(self, component: "Component") -> List["Dependency"]:
         # Invoke the dependency:list goal, direct dependencies only.
-        print(f"[DEBUG] Getting dependencies: {component}")
         pom_artifact = component.artifact(packaging="pom")
         assert pom_artifact.env.repo_cache
         output = self._mvn(
@@ -188,7 +199,7 @@ class SysCallResolver(Resolver):
     @staticmethod
     def _run(command, *args) -> str:
         command_and_args = (command,) + args
-        # _logger.debug(f"Executing: {command_and_args}")
+        debug(f"Executing: {command_and_args}")
         result = run(command_and_args, capture_output=True)
         if result.returncode == 0: return result.stdout.decode()
 
@@ -556,6 +567,7 @@ class Dependency:
         return self.artifact.packaging
 
     def set_version(self, version: str) -> None:
+        assert isinstance(version, str)
         self.artifact.component.version = version
 
 
@@ -644,7 +656,6 @@ class POM(XML):
                 v == parent_pom.version
             ):
                 return parent_pom
-            print("[DEBUG] Ignoring non-matching GAV for relative parent path: {parent_path}")
 
         pom_artifact = self.env.project(g, a).at_version(v).artifact(packaging="pom")
         return POM(pom_artifact.resolve(), self.env)
@@ -840,6 +851,9 @@ class Model:
         """
         self.env = env
 
+        gav = f"{pom.groupId}:{pom.artifactId}:{pom.version}"
+        debug(f"{gav}: begin model initialization")
+
         # Transfer raw metadata from POM source to target model.
         # For now, we handle only dependencies, dependencyManagement, and properties.
         self.deps: Dict[GACT, Dependency] = {}
@@ -851,6 +865,7 @@ class Model:
         # https://maven.apache.org/ref/3.3.9/maven-model-builder/
 
         # -- profile activation and injection --
+        debug(f"{gav}: profile activation and injection")
 
         # Compute active profiles.
         active_profiles = [
@@ -869,11 +884,12 @@ class Model:
             profile_dep_mgmt = [self.env.dependency(el) for el in profile_dep_mgmt_els]
             self._merge_deps(profile_dep_mgmt, managed=True)
 
-            profile_props_els = profile.findall("properties")
+            profile_props_els = profile.findall("properties/*")
             profile_props = {el.tag: el.text for el in profile_props_els}
             self._merge_props(profile_props)
 
         # -- parent resolution and inheritance assembly --
+        debug(f"{gav}: parent resolution and inheritance assembly")
 
         # Merge values up the parent chain into the current model.
         parent = pom.parent()
@@ -882,6 +898,7 @@ class Model:
             parent = parent.parent()
 
         # -- model interpolation --
+        debug(f"{gav}: model interpolation")
 
         # Replace ${...} expressions in property values.
         for k in self.props: Model._propvalue(k, self.props)
@@ -893,6 +910,7 @@ class Model:
             dep.set_version(Model._evaluate(v, self.props))
 
         # -- dependency management import --
+        debug(f"{gav}: dependency management import")
 
         # NB: BOM-type dependencies imported in the <dependencyManagement> section are
         # fully interpolated before merging their dependencyManagement into this model,
@@ -900,8 +918,8 @@ class Model:
         # inheritance chain. Therefore, unlike with parent POMs, dependency versions
         # defined indirectly via version properties cannot be overridden by setting
         # those version properties in the consuming POM!
-        for k, dep in self.dep_mgmt:
-            if dep.scope != "import" and dep.type == "pom": continue
+        for dep in self.dep_mgmt.values():
+            if dep.scope != "import" or dep.type != "pom": continue
 
             # Load the POM to import.
             bom_project = self.env.project(dep.groupId, dep.artifactId)
@@ -914,15 +932,18 @@ class Model:
             self._merge_deps(bom_model.dep_mgmt.values(), managed=True)
 
         # -- dependency management injection --
+        debug(f"{gav}: dependency management injection")
 
         # Handles injection of dependency management into the model.
-        for gacp, dep in self.deps:
+        for gacp, dep in self.deps.items():
             if dep.version is not None: continue
             # This dependency's version is still unset; use managed version.
-            version = self.dep_mgmt.get(gacp, None)
-            if version is None:
+            managed = self.dep_mgmt.get(gacp, None)
+            if managed is None:
                 raise ValueError("No version available for dependency {dep}")
-            dep.set_version(version)
+            dep.set_version(managed.version)
+
+        debug(f"{gav}: model construction complete")
 
     def _merge_deps(self, source: Iterable[Dependency], managed: bool = False) -> None:
         target = self.dep_mgmt if managed else self.deps
@@ -1016,3 +1037,11 @@ class Model:
         evaluated = Model._evaluate(expression, props, visited)
         props[propname] = evaluated
         return evaluated
+
+
+def go():
+    env = Environment()
+    sjc = env.project("org.scijava", "scijava-common")
+    sjc94 = sjc.at_version("2.94.2")
+    #sjc96 = sjc.at_version("2.96.0")
+    return Model(env, sjc94.pom())
