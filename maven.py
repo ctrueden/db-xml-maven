@@ -109,7 +109,6 @@ class SimpleResolver(Resolver):
             raise RuntimeError("Downloading of snapshots is not yet implemented.")
 
         for remote_repo in artifact.env.remote_repos.values():
-            # Consider raising an exception for snapshots for the moment?
             url = f"{remote_repo}/{artifact.component.path_prefix}/{artifact.filename}"
             response: requests.Response = requests.get(url)
             if response.status_code == 200:
@@ -923,18 +922,8 @@ class Model:
         # inheritance chain. Therefore, unlike with parent POMs, dependency versions
         # defined indirectly via version properties cannot be overridden by setting
         # those version properties in the consuming POM!
-        for dep in self.dep_mgmt.values():
-            if not (dep.scope == "import" and dep.type == "pom"): continue
-
-            # Load the POM to import.
-            bom_project = self.env.project(dep.groupId, dep.artifactId)
-            bom_pom = bom_project.at_version(dep.version).pom()
-
-            # Fully build the BOM's model, agnostic of this one.
-            bom_model = Model(bom_pom)
-
-            # Merge the BOM model's <dependencyManagement> into this model.
-            self._merge_deps(bom_model.dep_mgmt.values(), managed=True)
+        # NB: We need to copy the dep_mgmt dict to avoid mutating while iterating it.
+        self._import_boms(self.dep_mgmt.copy())
 
         # -- dependency management injection --
         debug(f"{gav}: dependency management injection")
@@ -974,6 +963,29 @@ class Model:
                     dep.set_version(managed_dep.version)
 
         return list(deps.values())
+
+    def _import_boms(self, candidates: Dict[GACT, Dependency]) -> None:
+        """
+        Scan the candidates for dependencies of type pom with scope import.
+        For each such dependency found, import its dependencyManagement section
+        into ours, scanning it recursively for more BOMs to import.
+        :param candidates: The candidate dependencies, which might be BOMs.
+        """
+        for dep in candidates.values():
+            if not (dep.scope == "import" and dep.type == "pom"): continue
+
+            # Load the POM to import.
+            bom_project = self.env.project(dep.groupId, dep.artifactId)
+            bom_pom = bom_project.at_version(dep.version).pom()
+
+            # Fully build the BOM's model, agnostic of this one.
+            bom_model = Model(bom_pom)
+
+            # Merge the BOM model's <dependencyManagement> into this model.
+            self._merge_deps(bom_model.dep_mgmt.values(), managed=True)
+
+            # Scan BOM <dependencyManagement> for additional potential BOMs.
+            self._import_boms(bom_model.dep_mgmt)
 
     def _merge_deps(self, source: Iterable[Dependency], managed: bool = False) -> None:
         target = self.dep_mgmt if managed else self.deps
