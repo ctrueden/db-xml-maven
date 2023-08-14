@@ -15,6 +15,8 @@ import iogo
 
 # -- Constants --
 
+DEFAULT_LOCAL_REPOS = []
+DEFAULT_REMOTE_REPOS = {"central": "https://repo.maven.apache.org/maven2"}
 DEFAULT_CLASSIFIER = ""
 DEFAULT_PACKAGING = "jar"
 DEFAULT_SCOPE = "compile"
@@ -27,6 +29,7 @@ DEFAULT_SCOPE = "compile"
 
 def info(msg):
     print("[INFO] " + msg)
+
 
 def debug(msg):
     print("[DEBUG] " + msg)
@@ -105,7 +108,7 @@ class SimpleResolver(Resolver):
         if artifact.version.endswith("-SNAPSHOT"):
             raise RuntimeError("Downloading of snapshots is not yet implemented.")
 
-        for remote_repo in artifact.env.remote_repos:
+        for remote_repo in artifact.env.remote_repos.values():
             # Consider raising an exception for snapshots for the moment?
             url = f"{remote_repo}/{artifact.component.path_prefix}/{artifact.filename}"
             response: requests.Response = requests.get(url)
@@ -116,14 +119,16 @@ class SimpleResolver(Resolver):
                 # check the actual hash of the downloaded file contents against the expected one.
                 cached_file = artifact.cached_path
                 assert not cached_file.exists()
+                cached_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(cached_file, "wb") as f:
                     f.write(response.content)
+                debug(f"Downloaded {url} to {cached_file}")
                 return cached_file
 
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
 
     def dependencies(self, component: "Component") -> List["Dependency"]:
-        model = Model(component.env, component.pom())
+        model = Model(component.pom())
         # FIXME: Transitive dependencies?
         return list(model.deps.values())
 
@@ -226,7 +231,7 @@ class Environment:
             repo_cache: Optional[Path] = None,
             local_repos: Optional[List[Path]] = None,
             remote_repos: Optional[Dict[str, str]] = None,
-            resolver: Resolver = None,
+            resolver: Optional[Resolver] = None,
     ):
         """
         Create a Maven environment.
@@ -253,9 +258,9 @@ class Environment:
             By default, the SimpleResolver will be used.
         """
         self.repo_cache: Path = repo_cache or environ.get("M2_REPO", Path("~").expanduser() / ".m2" / "repository")
-        self.local_repos: List[Path] = local_repos.copy() if local_repos else []
-        self.remote_repos: Dict[str, str] = remote_repos.copy() if remote_repos else {}
-        self.resolver: Resolver = resolver if resolver else SimpleResolver()
+        self.local_repos: List[Path] = (DEFAULT_LOCAL_REPOS if local_repos is None else local_repos).copy()
+        self.remote_repos: Dict[str, str] = (DEFAULT_REMOTE_REPOS if remote_repos is None else remote_repos).copy()
+        self.resolver: Resolver = resolver or SimpleResolver()
 
     def project(self, groupId: str, artifactId: str) -> "Project":
         return Project(self, groupId, artifactId)
@@ -354,7 +359,7 @@ class Project:
         """
         # CTR FIXME: Think about whether multiple timestamped snapshots at the same snapshot version should be
         # one Component, or multiple Components. because we could just have a list of timestamps in the Component
-        # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptions regarding how Components and Artifacts relate.
+        # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptionsregarding how Components and Artifacts relate.
         # You can only "sort of" have an artifact for a SNAPSHOT without a timestamp lock... it's always timestamped on the remote side,
         # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
         if locked: raise RuntimeError("Locked snapshot reporting is unimplemented")
@@ -843,13 +848,13 @@ class Model:
     A minimal Maven metadata model, tracking only dependencies and properties.
     """
 
-    def __init__(self, env: Environment, pom: "POM"):
+    def __init__(self, pom: "POM"):
         """
         Builds a Maven metadata model from the given POM.
 
         :param pom: A source POM from which to extract metadata (e.g. dependencies).
         """
-        self.env = env
+        self.env = pom.env
 
         gav = f"{pom.groupId}:{pom.artifactId}:{pom.version}"
         debug(f"{gav}: begin model initialization")
@@ -926,7 +931,7 @@ class Model:
             bom_pom = bom_project.at_version(dep.version).pom()
 
             # Fully build the BOM's model, agnostic of this one.
-            bom_model = Model(env, bom_pom)
+            bom_model = Model(bom_pom)
 
             # Merge the BOM model's <dependencyManagement> into this model.
             self._merge_deps(bom_model.dep_mgmt.values(), managed=True)
@@ -956,7 +961,7 @@ class Model:
         # Add the transitive dependencies (i.e. dependencies of dependencies).
         for dep in self.deps.values():
             dep_pom = dep.artifact.component.pom()
-            dep_model = Model(self.env, dep_pom)
+            dep_model = Model(dep_pom)
             dep_deps = dep_model.dependencies(transitive=True)
             for dep_dep in dep_deps:
                 gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
@@ -1064,12 +1069,18 @@ class Model:
         return evaluated
 
 
-# CTR TEMP: For debugging.
-if __name__ == "__main__":
+# ===== CTR TEMP: For debugging. =====
+
+
+def _main():
     env = Environment()
     sjc = env.project("org.scijava", "scijava-common")
     sjc94 = sjc.at_version("2.94.2")
-    #sjc96 = sjc.at_version("2.96.0")
-    model = Model(env, sjc94.pom())
+    # sjc96 = sjc.at_version("2.96.0")
+    model = Model(sjc94.pom())
     for dep in model.dependencies():
         print(dep)
+
+
+if __name__ == "__main__":
+    _main()

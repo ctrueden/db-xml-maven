@@ -6,11 +6,13 @@ from typing import Dict, List, Set, Tuple, Union, Optional
 
 from lxml import etree
 
-from maven import Artifact, Component
+from maven import Artifact, Component, Model
 
 
 # -- Type aliases --
 
+
+# In Maven terms, a <plugin> entry is a (G, A, C, P) tuple at all versions.
 Plugin = Tuple[str, str, str, str]
 
 
@@ -162,14 +164,14 @@ class FilesCollection:
                 description.text = desc
 
             # <dependency> tags
-            for dep in pom.dependencies():
+            model = Model(pom)
+            for dep in model.dependencies(transitive=True):
                 dependency = etree.SubElement(version, "dependency")
                 dependency.set("filename", f"jars/{dep.artifact.filename}")
                 dependency.set("timestamp", timestamp(dep.artifact.resolve()))
 
             # <author> tags
             # Use developers and contributors from the POM, founders first, then others.
-            # CTR FIXME: pom.developers, pom.contributors
             people = pom.developers + pom.contributors
             founders = [p for p in people if "founder" in p.get("roles", [])]
             others = [p for p in people if p not in founders]
