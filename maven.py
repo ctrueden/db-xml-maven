@@ -951,11 +951,11 @@ class Model:
             _log.debug(f"{self.gav}: {dep}")
 
         # Look for transitive dependencies (i.e. dependencies of direct dependencies).
-        for gact, dep in direct_deps.items():
+        for dep in direct_deps.values():
             dep_model = Model(dep.artifact.component.pom())
             dep_deps = dep_model.dependencies(deps)
             for dep_dep in dep_deps:
-                if dep_dep.optional: continue  # Optional dependencies are not transitive.
+                if dep_dep.optional: continue  # Optional dependency is not transitive.
                 if dep_dep.scope not in ("compile", "runtime"): continue  # Non-transitive scope.
                 if Model._is_excluded(dep_dep, dep.exclusions): continue  # Dependency is excluded.
                 dep_dep_gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
