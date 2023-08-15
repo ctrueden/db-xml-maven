@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 from hashlib import md5, sha1
@@ -24,15 +25,7 @@ DEFAULT_SCOPE = "compile"
 
 # -- Logging --
 
-
-# CTR FIXME use a real logger
-
-def info(msg):
-    print("[INFO] " + msg)
-
-
-def debug(msg):
-    print("[DEBUG] " + msg)
+_log = logging.getLogger(__name__)
 
 
 # -- Functions --
@@ -121,7 +114,7 @@ class SimpleResolver(Resolver):
                 cached_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(cached_file, "wb") as f:
                     f.write(response.content)
-                debug(f"Downloaded {url} to {cached_file}")
+                _log.debug(f"Downloaded {url} to {cached_file}")
                 return cached_file
 
         raise RuntimeError(f"Artifact {artifact} not found in remote repositories {artifact.env.remote_repos}")
@@ -143,7 +136,7 @@ class SysCallResolver(Resolver):
         self.mvn_flags = ["-B", "-T8"]
 
     def download(self, artifact: "Artifact") -> Optional[Path]:
-        info(f"Downloading artifact: {artifact}")
+        _log.info(f"Downloading artifact: {artifact}")
         assert artifact.env.repo_cache
         assert artifact.groupId
         assert artifact.artifactId
@@ -203,7 +196,7 @@ class SysCallResolver(Resolver):
     @staticmethod
     def _run(command, *args) -> str:
         command_and_args = (command,) + args
-        debug(f"Executing: {command_and_args}")
+        _log.debug(f"Executing: {command_and_args}")
         result = run(command_and_args, capture_output=True)
         if result.returncode == 0: return result.stdout.decode()
 
@@ -856,7 +849,7 @@ class Model:
         """
         self.env = pom.env
         self.gav = f"{pom.groupId}:{pom.artifactId}:{pom.version}"
-        debug(f"{self.gav}: begin model initialization")
+        _log.debug(f"{self.gav}: begin model initialization")
 
         # Transfer raw metadata from POM source to target model.
         # For now, we handle only dependencies, dependencyManagement, and properties.
@@ -869,7 +862,7 @@ class Model:
         # https://maven.apache.org/ref/3.3.9/maven-model-builder/
 
         # -- profile activation and injection --
-        debug(f"{self.gav}: profile activation and injection")
+        _log.debug(f"{self.gav}: profile activation and injection")
 
         # Compute active profiles.
         active_profiles = [
@@ -893,7 +886,7 @@ class Model:
             self._merge_props(profile_props)
 
         # -- parent resolution and inheritance assembly --
-        debug(f"{self.gav}: parent resolution and inheritance assembly")
+        _log.debug(f"{self.gav}: parent resolution and inheritance assembly")
 
         # Merge values up the parent chain into the current model.
         parent = pom.parent()
@@ -902,7 +895,7 @@ class Model:
             parent = parent.parent()
 
         # -- model interpolation --
-        debug(f"{self.gav}: model interpolation")
+        _log.debug(f"{self.gav}: model interpolation")
 
         # Replace ${...} expressions in property values.
         for k in self.props: Model._propvalue(k, self.props)
@@ -914,7 +907,7 @@ class Model:
             dep.set_version(Model._evaluate(v, self.props))
 
         # -- dependency management import --
-        debug(f"{self.gav}: dependency management import")
+        _log.debug(f"{self.gav}: dependency management import")
 
         # NB: BOM-type dependencies imported in the <dependencyManagement> section are
         # fully interpolated before merging their dependencyManagement into this model,
@@ -926,7 +919,7 @@ class Model:
         self._import_boms(self.dep_mgmt.copy())
 
         # -- dependency management injection --
-        debug(f"{self.gav}: dependency management injection")
+        _log.debug(f"{self.gav}: dependency management injection")
 
         # Handles injection of dependency management into the model.
         for gact, dep in self.deps.items():
@@ -937,7 +930,7 @@ class Model:
                 raise ValueError("No version available for dependency {dep}")
             dep.set_version(managed.version)
 
-        debug(f"{self.gav}: model construction complete")
+        _log.debug(f"{self.gav}: model construction complete")
 
     def dependencies(self, deps: Dict[GACT, Dependency] = None) -> List[Dependency]:
         recursing = True  # Whether we are currently diving into transitive dependencies.
@@ -953,7 +946,7 @@ class Model:
 
             # Record this new direct dependency.
             deps[gact] = direct_deps[gact] = dep
-            debug(f"{self.gav}: {dep}")
+            _log.debug(f"{self.gav}: {dep}")
 
         # Look for transitive dependencies (i.e. dependencies of direct dependencies).
         for gact, dep in direct_deps.items():
@@ -979,7 +972,7 @@ class Model:
                     managed_note = f" (managed from {dep_dep.version})"
                     dep_dep.set_version(managed_dep.version)
 
-                debug(f"{self.gav}: {dep} -> {dep_dep}{managed_note}")
+                _log.debug(f"{self.gav}: {dep} -> {dep_dep}{managed_note}")
 
         return list(deps.values())
 
@@ -1112,8 +1105,8 @@ class Model:
 
 # ===== CTR TEMP: For debugging. =====
 
-
 def _main():
+    logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
     env = Environment()
     sjc = env.project("org.scijava", "scijava-common")
     sjc96 = sjc.at_version("2.96.0")
