@@ -1,4 +1,5 @@
 import logging
+import sys
 from abc import ABC, abstractmethod
 from datetime import datetime
 from hashlib import md5, sha1
@@ -932,16 +933,17 @@ class Model:
 
         _log.debug(f"{self.gav}: model construction complete")
 
-    def dependencies(self, deps: Dict[GACT, Dependency] = None) -> List[Dependency]:
-        recursing = True  # Whether we are currently diving into transitive dependencies.
-        if deps is None:
-            deps = {}
-            recursing = False
+    def dependencies(self, resolved: Dict[GACT, Dependency] = None) -> List[Dependency]:
+        deps: Dict[GACT, Dependency] = {}
+
+        # Determine whether we are currently diving into transitive dependencies.
+        recursing: bool = resolved is not None
+        if resolved is None: resolved = {}
 
         # Process direct dependencies.
         direct_deps: Dict[GACT, Dependency] = {}
         for gact, dep in self.deps.items():
-            if gact in deps: continue  # Dependency has already been processed.
+            if gact in resolved: continue  # Dependency has already been processed.
             if recursing and dep.scope not in ("compile", "runtime"): continue  # Non-transitive scope.
 
             # Record this new direct dependency.
@@ -956,9 +958,10 @@ class Model:
                 if dep_dep.optional: continue  # Optional dependencies are not transitive.
                 if dep_dep.scope not in ("compile", "runtime"): continue  # Non-transitive scope.
                 if Model._is_excluded(dep_dep, dep.exclusions): continue  # Dependency is excluded.
+                dep_dep_gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
+                if dep_dep_gact in resolved: continue  # Dependency has already been processed.
 
                 # Record the transitive dependency.
-                dep_dep_gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
                 deps[dep_dep_gact] = dep_dep
 
                 # Adjust scope of transitive dependency appropriately.
@@ -1103,17 +1106,21 @@ class Model:
         return evaluated
 
 
-# ===== CTR TEMP: For debugging. =====
+# -- Main --
 
-def _main():
-    logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
+def _main(args):
+    log_format = "[%(levelname)s] %(message)s"
+    log_level = logging.DEBUG if "-d" in args else logging.INFO
+    logging.basicConfig(format=log_format, level=log_level)
     env = Environment()
-    sjc = env.project("org.scijava", "scijava-common")
-    sjc96 = sjc.at_version("2.96.0")
-    model = Model(sjc96.pom())
-    for dep in model.dependencies():
-        print(dep)
+    gavs = [arg for arg in args if ":" in arg]
+    for gav in gavs:
+        if len(gavs) > 1: print(f"\n[{gav}]")
+        g, a, v = gav.split(":")
+        model = Model(env.project(g, a).at_version(v).pom())
+        for dep in model.dependencies():
+            print(dep)
 
 
 if __name__ == "__main__":
-    _main()
+    _main(sys.argv[1:])
