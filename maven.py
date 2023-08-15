@@ -839,6 +839,7 @@ class Metadatas(Metadata):
         return next((m.release for m in reversed(self.metadatas) if m.release), None)
 
 
+# (groupId, artifactId, classifier, type)
 GACT = Tuple[str, str, str, str]
 
 
@@ -854,9 +855,8 @@ class Model:
         :param pom: A source POM from which to extract metadata (e.g. dependencies).
         """
         self.env = pom.env
-
-        gav = f"{pom.groupId}:{pom.artifactId}:{pom.version}"
-        debug(f"{gav}: begin model initialization")
+        self.gav = f"{pom.groupId}:{pom.artifactId}:{pom.version}"
+        debug(f"{self.gav}: begin model initialization")
 
         # Transfer raw metadata from POM source to target model.
         # For now, we handle only dependencies, dependencyManagement, and properties.
@@ -869,7 +869,7 @@ class Model:
         # https://maven.apache.org/ref/3.3.9/maven-model-builder/
 
         # -- profile activation and injection --
-        debug(f"{gav}: profile activation and injection")
+        debug(f"{self.gav}: profile activation and injection")
 
         # Compute active profiles.
         active_profiles = [
@@ -893,7 +893,7 @@ class Model:
             self._merge_props(profile_props)
 
         # -- parent resolution and inheritance assembly --
-        debug(f"{gav}: parent resolution and inheritance assembly")
+        debug(f"{self.gav}: parent resolution and inheritance assembly")
 
         # Merge values up the parent chain into the current model.
         parent = pom.parent()
@@ -902,7 +902,7 @@ class Model:
             parent = parent.parent()
 
         # -- model interpolation --
-        debug(f"{gav}: model interpolation")
+        debug(f"{self.gav}: model interpolation")
 
         # Replace ${...} expressions in property values.
         for k in self.props: Model._propvalue(k, self.props)
@@ -914,7 +914,7 @@ class Model:
             dep.set_version(Model._evaluate(v, self.props))
 
         # -- dependency management import --
-        debug(f"{gav}: dependency management import")
+        debug(f"{self.gav}: dependency management import")
 
         # NB: BOM-type dependencies imported in the <dependencyManagement> section are
         # fully interpolated before merging their dependencyManagement into this model,
@@ -926,41 +926,60 @@ class Model:
         self._import_boms(self.dep_mgmt.copy())
 
         # -- dependency management injection --
-        debug(f"{gav}: dependency management injection")
+        debug(f"{self.gav}: dependency management injection")
 
         # Handles injection of dependency management into the model.
-        for gacp, dep in self.deps.items():
+        for gact, dep in self.deps.items():
             if dep.version is not None: continue
             # This dependency's version is still unset; use managed version.
-            managed = self.dep_mgmt.get(gacp, None)
+            managed = self.dep_mgmt.get(gact, None)
             if managed is None:
                 raise ValueError("No version available for dependency {dep}")
             dep.set_version(managed.version)
 
-        debug(f"{gav}: model construction complete")
+        debug(f"{self.gav}: model construction complete")
 
-    def dependencies(self, transitive: bool = True) -> List[Dependency]:
-        deps: Dict[GACT, Dependency] = {}
+    def dependencies(self, deps: Dict[GACT, Dependency] = None) -> List[Dependency]:
+        recursing = True  # Whether we are currently diving into transitive dependencies.
+        if deps is None:
+            deps = {}
+            recursing = False
 
-        # Add the direct dependencies.
-        deps.update(self.deps)
+        # Process direct dependencies.
+        direct_deps: Dict[GACT, Dependency] = {}
+        for gact, dep in self.deps.items():
+            if gact in deps: continue  # Dependency has already been processed.
+            if recursing and dep.scope not in ("compile", "runtime"): continue  # Non-transitive scope.
 
-        if not transitive: return list(deps.values())
+            # Record this new direct dependency.
+            deps[gact] = direct_deps[gact] = dep
+            debug(f"{self.gav}: {dep}")
 
-        # Add the transitive dependencies (i.e. dependencies of dependencies).
-        for dep in self.deps.values():
-            dep_pom = dep.artifact.component.pom()
-            dep_model = Model(dep_pom)
-            dep_deps = dep_model.dependencies(transitive=True)
+        # Look for transitive dependencies (i.e. dependencies of direct dependencies).
+        for gact, dep in direct_deps.items():
+            dep_model = Model(dep.artifact.component.pom())
+            dep_deps = dep_model.dependencies(deps)
             for dep_dep in dep_deps:
-                gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
-                if gact in deps: continue  # Already know about this dependency.
-                # We found a new transitive dependency. Record it!
-                deps[gact] = dep_dep
+                if dep_dep.optional: continue  # Optional dependencies are not transitive.
+                if dep_dep.scope not in ("compile", "runtime"): continue  # Non-transitive scope.
+                if Model._is_excluded(dep_dep, dep.exclusions): continue  # Dependency is excluded.
+
+                # Record the transitive dependency.
+                dep_dep_gact = (dep_dep.groupId, dep_dep.artifactId, dep_dep.classifier, dep_dep.type)
+                deps[dep_dep_gact] = dep_dep
+
+                # Adjust scope of transitive dependency appropriately.
+                if dep.scope == "runtime": dep_dep.scope = "runtime"  # We only need this dependency at runtime.
+                elif dep.scope == "test": dep_dep.scope = "test"  # We only need this dependency for testing.
+
                 # If the transitive dependency has a managed version, prefer it.
-                managed_dep = self.dep_mgmt.get(gact, None)
-                if managed_dep is not None:
-                    dep.set_version(managed_dep.version)
+                managed_note = ""
+                if dep_dep_gact in self.dep_mgmt:
+                    managed_dep = self.dep_mgmt.get(dep_dep_gact)
+                    managed_note = f" (managed from {dep_dep.version})"
+                    dep_dep.set_version(managed_dep.version)
+
+                debug(f"{self.gav}: {dep} -> {dep_dep}{managed_note}")
 
         return list(deps.values())
 
@@ -999,12 +1018,22 @@ class Model:
 
     def _merge(self, pom: POM) -> None:
         """
-        Transfer metadata from POM source to target model.
+        Merge metadata from the given POM source into this model.
         For now, we handle only dependencies, dependencyManagement, and properties.
         """
         self._merge_deps(pom.dependencies())
         self._merge_deps(pom.dependencies(managed=True), managed=True)
         self._merge_props(pom.properties)
+
+    @staticmethod
+    def _is_excluded(dep: Dependency, exclusions: Iterable[Project]):
+        return any(
+            (
+                exclusion.groupId in ["*", dep.groupId] and
+                exclusion.artifactId in ["*", dep.artifactId]
+            )
+            for exclusion in exclusions
+        )
 
     @staticmethod
     def _is_active_profile(el):
@@ -1087,9 +1116,8 @@ class Model:
 def _main():
     env = Environment()
     sjc = env.project("org.scijava", "scijava-common")
-    sjc94 = sjc.at_version("2.94.2")
-    # sjc96 = sjc.at_version("2.96.0")
-    model = Model(sjc94.pom())
+    sjc96 = sjc.at_version("2.96.0")
+    model = Model(sjc96.pom())
     for dep in model.dependencies():
         print(dep)
 
