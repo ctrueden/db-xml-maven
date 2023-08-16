@@ -104,8 +104,10 @@ class FilesCollection:
             self._register_artifact(dep.artifact, current_version)
 
     def generate_xml(self, template_path: Union[Path, str]) -> str:
+        # NB: The remove_blank_text=True option is needed to pretty-print the XML output later:
+        # https://lxml.de/FAQ.html#why-doesn-t-the-pretty-print-option-reformat-my-xml-output
         with open(template_path) as f:
-            tree = etree.parse(f)
+            tree = etree.parse(f, parser=etree.XMLParser(remove_blank_text=True))
 
         # In Updater terms, a <plugin> entry is a (G, A, C, P) tuple at all versions.
         # Therefore, we make a list of artifacts (i.e. versions) for each GACP.
@@ -121,7 +123,7 @@ class FilesCollection:
         for _, artifacts in plugins.items():
             self._populate_plugin(tree, artifacts)
 
-        return etree.tostring(tree, xml_declaration=True, encoding="utf-8").decode()
+        return etree.tostring(tree, xml_declaration=True, pretty_print=True, encoding="utf-8").decode()
 
     def _populate_plugin(self, tree, artifacts: List[Artifact]) -> None:
         # Discern which version is the current one.

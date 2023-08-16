@@ -20,6 +20,9 @@ remote_repos = {
 }
 print("Creating Maven environment...")
 env = maven.Environment(local_repos=local_repos, remote_repos=remote_repos)
+#def fail_download(*args):
+#    raise RuntimeError(f"Should not be downloading: {args[0]}")
+#env.resolver.download = fail_download
 
 print("Initializing FilesCollection...")
 fc = FilesCollection()

@@ -320,7 +320,8 @@ class Project:
 
     def __eq__(self, other):
         return (
-            self.groupId == other.groupId
+            other is not None
+            and self.groupId == other.groupId
             and self.artifactId == other.artifactId
         )
 
@@ -421,7 +422,8 @@ class Component:
 
     def __eq__(self, other):
         return (
-            self.project == other.project
+            other is not None
+            and self.project == other.project
             and self.version == other.version
         )
 
@@ -489,7 +491,8 @@ class Artifact:
 
     def __eq__(self, other):
         return (
-            self.component == other.component
+            other is not None
+            and self.component == other.component
             and self.classifier == other.classifier
             and self.packaging == other.packaging
         )
