@@ -1,16 +1,17 @@
 #!/usr/bin/env python
 
+import logging
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Set, Tuple, Union, Optional
 
 from lxml import etree
 
-from maven import Artifact, Component, Model
+from maven import Artifact, Component, Environment, Model
 
 
 # -- Type aliases --
-
 
 # In Maven terms, a <plugin> entry is a (G, A, C, P) tuple at all versions.
 Plugin = Tuple[str, str, str, str]
@@ -56,23 +57,17 @@ def deduce_platform(classifier: str) -> Optional[str]:
 # -- Classes --
 
 class FilesCollection:
-    # GACP = <plugin>
-    # GAVCP = <version> or <previous-version>
-    # - <version> only when we are in the primary populate phase, rather than the "scan back through maven-metadata.xml" phase
-    # - dependency list only when <version> and C=""
-
-    # huge bag of GAVCP's i.e. Artifacts
-    # sort it into GACP -> List[V]
-    #
-    # for each (G, A, C, P):
-    #   make a list of Vs.
-    #   If that GACVP appears on the *current GACVP list* then it's current, otherwise it's previous-version.
-    #
+    """
+    TODO
+    """
 
     def __init__(self):
-        self.components: Set[Component] = set()
+        # Set of artifacts (both current and previous) included in the db.xml.
         self.artifacts: Set[Artifact] = set()
+        # Set of *current* artifacts included in the db.xml.
         self.current: Set[Artifact] = set()
+        # Components whose dependencies have already been processed.
+        self.components: Set[Component] = set()
 
     def add_artifact(self, artifact: Artifact, current_version: bool = True):
         # Register artifact.
@@ -83,10 +78,7 @@ class FilesCollection:
         # Register dependencies.
         self._register_dependencies(artifact, current_version)
 
-        # Register previous versions of the artifact.
-        # CTR FIXME: two things:
-        # 1. This enumerates *all* versions of the artifact, not only *previous* ones. Might want a version comparator here.
-        # 2. There is no guarantee that this particular GACP exists at every previous version. Use a try/except when resolving the path, either here or during XML generation.
+        # Register other/"previous" versions of the artifact.
         for component in artifact.component.project.versions():
             previous_artifact = component.artifact(classifier=artifact.classifier, packaging=artifact.packaging)
             self.add_artifact(previous_artifact, False)
@@ -106,10 +98,10 @@ class FilesCollection:
             # This component's dependencies have already been processed.
             return
         self.components.add(artifact.component)
-        effective_pom = artifact.component.pom(interpolated=True)
-        for dep in effective_pom.dependencies():
-            if dep.scope in ("compile", "runtime"):
-                self._register_artifact(dep.artifact, current_version)
+        model = Model(artifact.component.pom())
+        for dep in model.dependencies():
+            if dep.scope not in ("compile", "runtime"): continue
+            self._register_artifact(dep.artifact, current_version)
 
     def generate_xml(self, template_path: Union[Path, str]) -> str:
         with open(template_path) as f:
@@ -125,7 +117,7 @@ class FilesCollection:
             plugins[plugin].append(artifact)
 
         # Now that we have our list of plugins, we can generate the corresponding XML elements.
-        # CTR FIXME: sort by artifactId? Or by groupId/artifactId? Or by something else?
+        # CTR TODO: sort by artifactId? Or by groupId/artifactId? Or by something else?
         for _, artifacts in plugins.items():
             self._populate_plugin(tree, artifacts)
 
@@ -165,7 +157,7 @@ class FilesCollection:
 
             # <dependency> tags
             model = Model(pom)
-            for dep in model.dependencies(transitive=True):
+            for dep in model.dependencies():
                 dependency = etree.SubElement(version, "dependency")
                 dependency.set("filename", f"jars/{dep.artifact.filename}")
                 dependency.set("timestamp", timestamp(dep.artifact.resolve()))
@@ -181,12 +173,6 @@ class FilesCollection:
                 author.text = name
 
         # <previous-version> tags
-        # CTR FIXME: need maven-metadata.xml I guess
-        # Need to build up a complete set of dependencies across all previous versions, in addition to only those for the current version.
-        # every <plugin> is an artifact, which is reflected in the method sig.
-        # every dependency is also translated into an artifact.
-        # build up details in data structures (queue, set, and/or dict)
-        # then call add_plugin recursively on the data structure.
         for artifact in artifacts:
             if artifact == current_artifact:
                 # Not a "previous" version!
