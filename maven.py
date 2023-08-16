@@ -26,7 +26,6 @@ DEFAULT_LOCAL_REPOS = []
 DEFAULT_REMOTE_REPOS = {"central": "https://repo.maven.apache.org/maven2"}
 DEFAULT_CLASSIFIER = ""
 DEFAULT_PACKAGING = "jar"
-DEFAULT_SCOPE = "compile"
 
 
 # -- Logging --
@@ -297,7 +296,7 @@ class Environment:
         version = el.findtext("version")  # NB: Might be None, which means managed.
         classifier = el.findtext("classifier") or DEFAULT_CLASSIFIER
         packaging = el.findtext("type") or DEFAULT_PACKAGING
-        scope = el.findtext("scope") or DEFAULT_SCOPE
+        scope = el.findtext("scope") or ("test" if packaging == "tests" else "compile")
         optional = el.findtext("optional") == "true" or False
         exclusions = [
             self.project(ex.findtext("groupId"), ex.findtext("artifactId"))
@@ -457,7 +456,7 @@ class Component:
 
     def artifact(self, classifier: str = DEFAULT_CLASSIFIER, packaging: str = DEFAULT_PACKAGING) -> "Artifact":
         """
-        Get an artifact (G:A:V:C:P) associated with this component.
+        Get an artifact (G:A:P:C:V) associated with this component.
 
         :param classifier: Classifier of the artifact.
         :param packaging: Packaging/type of the artifact.
@@ -479,7 +478,7 @@ class Component:
 
 class Artifact:
     """
-    This is a Component plus classifier and packaging.
+    This is a Component plus classifier and packaging (G:A:P:C:V).
     One file per artifact.
     """
 
@@ -588,10 +587,11 @@ class Dependency:
     def __init__(
             self,
             artifact: Artifact,
-            scope: str = DEFAULT_SCOPE,
+            scope: str = None,
             optional: bool = False,
             exclusions: Iterable[Project] = None
     ):
+        if scope is None: scope = "test" if artifact.classifier == "tests" else "compile"
         self.artifact = artifact
         self.scope = scope
         self.optional = optional
