@@ -1,3 +1,8 @@
+"""
+A Python implementation of Maven-related functionality, including parsing of Maven POMs
+and Maven metadata files, download of remote artifacts, and calculation of dependencies.
+"""
+
 import logging
 import sys
 from abc import ABC, abstractmethod
@@ -33,7 +38,7 @@ _log = logging.getLogger(__name__)
 
 def ts2dt(ts: str) -> datetime:
     """
-    Converts Maven-style timestamp strings into Python datetime objects.
+    Convert a Maven-style timestamp string into a Python datetime object.
 
     Valid forms:
     * 20210702144918 (seen in <lastUpdated> in maven-metadata.xml)
@@ -47,13 +52,30 @@ def ts2dt(ts: str) -> datetime:
 def coord2str(
     groupId: str,
     artifactId: str,
-    version: str = None,
-    classifier: str = None,
-    packaging: str = None,
-    scope: str = None,
+    version: Optional[str] = None,
+    classifier: Optional[str] = None,
+    packaging: Optional[str] = None,
+    scope: Optional[str] = None,
     optional: bool = False
 ):
-    # We match the order from the dependency:list goal: G:A:P:C:V:S.
+    """
+    Return a string representation of the given Maven coordinates.
+
+    For an overview of Maven coordinates, see:
+    * https://maven.apache.org/pom.html#Maven_Coordinates
+    * https://maven.apache.org/pom.html#dependencies
+
+    :param groupId: The groupId of the Maven coordinate.
+    :param artifactId: The artifactId of the Maven coordinate.
+    :param version The version of the Maven coordinate.
+    :param classifier: The classifier of the Maven coordinate.
+    :param packaging: The packaging/type of the Maven coordinate.
+    :param scope: The scope of the Maven dependency.
+    :param optional: Whether the Maven dependency is optional.
+    :return:
+        A string encompassing the given fields, matching the
+        G:A:P:C:V:S order used by mvn's dependency:list goal.
+    """
     s = f"{groupId}:{artifactId}"
     if packaging: s += f":{packaging}"
     if classifier: s += f":{classifier}"
@@ -85,7 +107,6 @@ class Resolver(ABC):
     def dependencies(self, component: "Component") -> List["Dependency"]:
         """
         Determine dependencies for the given Maven component.
-
         :param component: The component for which to determine the dependencies.
         :return: The list of dependencies.
         """
@@ -107,7 +128,7 @@ class SimpleResolver(Resolver):
             response: requests.Response = requests.get(url)
             if response.status_code == 200:
                 # Artifact downloaded successfully.
-                # FIXME: Also get MD5 and SHA1 files if available.
+                # TODO: Also get MD5 and SHA1 files if available.
                 # And for each, if it *is* available and successfully gotten,
                 # check the actual hash of the downloaded file contents against the expected one.
                 cached_file = artifact.cached_path
@@ -122,7 +143,6 @@ class SimpleResolver(Resolver):
 
     def dependencies(self, component: "Component") -> List["Dependency"]:
         model = Model(component.pom())
-        # FIXME: Transitive dependencies?
         return list(model.deps.values())
 
 
@@ -169,7 +189,7 @@ class SysCallResolver(Resolver):
         output = self._mvn(
             "dependency:list",
             "-f", pom_artifact.resolve(),
-            "-DxcludeTransitive=true",
+            "-DexcludeTransitive=true",
             f"-Dmaven.repo.local={pom_artifact.env.repo_cache}"
         )
 
@@ -256,9 +276,21 @@ class Environment:
         self.resolver: Resolver = resolver or SimpleResolver()
 
     def project(self, groupId: str, artifactId: str) -> "Project":
+        """
+        TODO
+        Get a project (G:A) with the given groupId and artifactId.
+        :param groupId: The groupId of the project.
+        :param artifactId: The artifactId of the project.
+        :return: The Project object.
+        """
         return Project(self, groupId, artifactId)
 
     def dependency(self, el: ElementTree.Element) -> "Dependency":
+        """
+        Create a Dependency object from the given XML element.
+        :param el: The XML element from which to create the dependency.
+        :return: The Dependency object.
+        """
         groupId = el.findtext("groupId")
         artifactId = el.findtext("artifactId")
         assert groupId and artifactId
@@ -278,13 +310,14 @@ class Environment:
 
 class Project:
     """
-    This is a G:A.
+    This is a Maven project: i.e. a groupId+artifact (G:A) pair.
     """
 
     def __init__(self, env: Environment, groupId: str, artifactId: str):
         self.env = env
         self.groupId = groupId
         self.artifactId = artifactId
+        self._metadata: Optional[Metadata] = None
 
     def __eq__(self, other):
         return (
@@ -307,38 +340,49 @@ class Project:
         return Path(*self.groupId.split("."), self.artifactId)
 
     def at_version(self, version: str) -> "Component":
+        """
+        Fix this project (G:A) at a particular version (G:A:V).
+        :param version: The version of the project.
+        :return: Component at the given version.
+        """
         return Component(self, version)
 
+    @property
     def metadata(self) -> "Metadata":
-        # Aggregate all locally available project maven-metadata.xml sources.
-        repo_cache_dir = self.env.repo_cache / self.path_prefix
-        paths = (
-            [p for p in repo_cache_dir.glob("maven-metadata*.xml")] +
-            [r / self.path_prefix / "maven-metadata.xml" for r in self.env.local_repos]
-        )
-        return Metadatas([MetadataXML(p) for p in paths if p.exists()])
+        """Maven metadata about this project, encompassing all known sources."""
+        if self._metadata is None:
+            # Aggregate all locally available project maven-metadata.xml sources.
+            repo_cache_dir = self.env.repo_cache / self.path_prefix
+            paths = (
+                [p for p in repo_cache_dir.glob("maven-metadata*.xml")] +
+                [r / self.path_prefix / "maven-metadata.xml" for r in self.env.local_repos]
+            )
+            self._metadata = Metadatas([MetadataXML(p) for p in paths if p.exists()])
+        return self._metadata
 
-    def update(self):
-        # CTR FIXME: Update metadata from remote sources!
-        pass
+    def update(self) -> None:
+        """Update metadata from remote sources."""
+        raise RuntimeError("Unimplemented")
 
+    @property
     def release(self) -> str:
         """
-        Get the newest release version of this project.
+        The newest release version of this project.
         This is the equivalent of Maven's RELEASE version.
         """
-        raise RuntimeError("Unimplemented")
+        return self.metadata.release
 
+    @property
     def latest(self) -> str:
         """
-        Get the latest SNAPSHOT version of this project.
+        The latest SNAPSHOT version of this project.
         This is the equivalent of Maven's LATEST version.
         """
-        raise RuntimeError("Unimplemented")
+        return self.metadata.latest
 
     def versions(self, releases: bool = True, snapshots: bool = False, locked: bool = False) -> List["Component"]:
         """
-        Get the list of all known versions of this project.
+        Get a list of all known versions of this project.
 
         :param releases:
             If True, include release versions (those not ending in -SNAPSHOT) in the results.
@@ -350,16 +394,15 @@ class Project:
             As such, there may be more entries returned than when this flag is False.
         :return: List of Component objects, each of which represents a known version.
         """
-        # CTR FIXME: Think about whether multiple timestamped snapshots at the same snapshot version should be
+        # TODO: Think about whether multiple timestamped snapshots at the same snapshot version should be
         # one Component, or multiple Components. because we could just have a list of timestamps in the Component
-        # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptionsregarding how Components and Artifacts relate.
+        # as a field... but then we probably violate existing 1-to-many vs 1-to-1 type assumptions regarding how Components and Artifacts relate.
         # You can only "sort of" have an artifact for a SNAPSHOT without a timestamp lock... it's always timestamped on the remote side,
         # but on the local side only implicitly unless Maven's snapshot locking feature is used... confusing.
         if locked: raise RuntimeError("Locked snapshot reporting is unimplemented")
-        metadata = self.metadata()
         return [
             self.at_version(v)
-            for v in metadata.versions
+            for v in self.metadata.versions
             if (
                 (snapshots and v.endswith("-SNAPSHOT")) or
                 (releases and not v.endswith("-SNAPSHOT"))
@@ -391,14 +434,17 @@ class Component:
 
     @property
     def env(self) -> Environment:
+        """The component's Maven environment."""
         return self.project.env
 
     @property
     def groupId(self) -> str:
+        """The component's groupId."""
         return self.project.groupId
 
     @property
     def artifactId(self) -> str:
+        """The component's artifactId."""
         return self.project.artifactId
 
     @property
@@ -410,6 +456,15 @@ class Component:
         return self.project.path_prefix / self.version
 
     def artifact(self, classifier: str = DEFAULT_CLASSIFIER, packaging: str = DEFAULT_PACKAGING) -> "Artifact":
+        """
+        Get an artifact (G:A:V:C:P) associated with this component.
+
+        :param classifier: Classifier of the artifact.
+        :param packaging: Packaging/type of the artifact.
+        :return:
+            The Artifact object representing this component
+            with particular classifier and packaging.
+        """
         return Artifact(self, classifier, packaging)
 
     def pom(self) -> "POM":
@@ -452,14 +507,17 @@ class Artifact:
 
     @property
     def groupId(self) -> str:
+        """The artifact's groupId."""
         return self.component.groupId
 
     @property
     def artifactId(self) -> str:
+        """The artifact's artifactId."""
         return self.component.artifactId
 
     @property
     def version(self) -> str:
+        """The artifact's version."""
         return self.component.version
 
     @property
@@ -487,7 +545,7 @@ class Artifact:
 
     def resolve(self) -> Path:
         """
-        Resolves a local path to the artifact, downloading it as needed:
+        Resolve a local path to the artifact, downloading it as needed:
 
         1. If present in the linked local repository cache, use that path.
         2. Else if present in a linked locally available repository storage directory, use that path.
@@ -500,7 +558,7 @@ class Artifact:
 
         # Check any locally available Maven repository storage directories.
         for base in self.env.local_repos:
-            # CTR FIXME: Be smarter than this when version is a SNAPSHOT,
+            # TODO: Be smarter than this when version is a SNAPSHOT,
             # because local repo storage has timestamped SNAPSHOT filenames.
             p = base / self.component.path_prefix / self.filename
             if p.exists(): return p
@@ -509,9 +567,11 @@ class Artifact:
         return self.env.resolver.download(self)
 
     def md5(self) -> str:
+        """Compute the MD5 hash of the artifact."""
         return self._checksum("md5", md5)
 
     def sha1(self) -> str:
+        """Compute the SHA1 hash of the artifact."""
         return self._checksum("sha1", sha1)
 
     def _checksum(self, suffix, func):
@@ -542,29 +602,39 @@ class Dependency:
 
     @property
     def env(self) -> Environment:
+        """The dependency's Maven environment."""
         return self.artifact.env
 
     @property
     def groupId(self) -> str:
+        """The dependency's groupId."""
         return self.artifact.groupId
 
     @property
     def artifactId(self) -> str:
+        """The dependency's artifactId."""
         return self.artifact.artifactId
 
     @property
     def version(self) -> str:
+        """The dependency's version."""
         return self.artifact.version
 
     @property
     def classifier(self) -> str:
+        """The dependency's classifier."""
         return self.artifact.classifier
 
     @property
     def type(self) -> str:
+        """The dependency's packaging/type."""
         return self.artifact.packaging
 
     def set_version(self, version: str) -> None:
+        """
+        Alter the dependency's version.
+        :param version: The new version to use.
+        """
         assert isinstance(version, str)
         self.artifact.component.version = version
 
@@ -582,6 +652,12 @@ class XML:
         XML._strip_ns(self.tree.getroot())
 
     def dump(self, el: ElementTree.Element = None) -> str:
+        """
+        Get a string representation of the given XML element.
+        :param el: Element to stringify, or None to stringify the root node.
+        :return: The XML as a string.
+        """
+        # NB: Be careful: childless ElementTree.Element objects are falsy!
         if el is None: el = self.tree.getroot()
         return ElementTree.tostring(el).decode()
 
@@ -598,6 +674,7 @@ class XML:
 
     def value(self, path: str) -> Optional[str]:
         el = self.element(path)
+        # NB: Be careful: childless ElementTree.Element objects are falsy!
         return None if el is None else el.text
 
     @staticmethod
@@ -660,38 +737,47 @@ class POM(XML):
 
     @property
     def groupId(self) -> Optional[str]:
+        """The POM's <groupId> (or <parent><groupId>) value."""
         return self.value("groupId") or self.value("parent/groupId")
 
     @property
     def artifactId(self) -> Optional[str]:
+        """The POM's <artifactId> value."""
         return self.value("artifactId")
 
     @property
     def version(self) -> Optional[str]:
+        """The POM's <version> (or <parent><version>) value."""
         return self.value("version") or self.value("parent/version")
 
     @property
     def description(self) -> Optional[str]:
+        """The POM's <description> value."""
         return self.value("description")
 
     @property
     def scmURL(self) -> Optional[str]:
+        """The POM's <scm><url> value."""
         return self.value("scm/url")
 
     @property
     def issuesURL(self) -> Optional[str]:
+        """The POM's <issueManagement><url> value."""
         return self.value("issueManagement/url")
 
     @property
     def ciURL(self) -> Optional[str]:
+        """The POM's <ciManagement><url> value."""
         return self.value("ciManagement/url")
 
     @property
     def developers(self) -> List[Dict[str, Any]]:
+        """Dictionary of the POM's <developer> entries."""
         return self._people("developers/developer")
 
     @property
     def contributors(self) -> List[Dict[str, Any]]:
+        """Dictionary of the POM's <contributor> entries."""
         return self._people("contributors/contributor")
 
     def _people(self, path: str) -> List[Dict[str, Any]]:
@@ -712,9 +798,19 @@ class POM(XML):
 
     @property
     def properties(self) -> Dict[str, str]:
+        """Dictionary of key/value pairs from the POM's <properties>."""
         return {el.tag: el.text for el in self.elements("properties/*")}
 
     def dependencies(self, managed: bool = False) -> List[Dependency]:
+        """
+        Gets a list of the POM's <dependency> entries,
+        represented as Dependency objects.
+
+        :param managed:
+            If True, dependency entries will correspond to the POM's
+            <dependencyManagement> instead of <dependencies>.
+        :return: The list of Dependency objects.
+        """
         xpath = "dependencies/dependency"
         if managed: xpath = f"dependencyManagement/{xpath}"
         return [
@@ -844,7 +940,7 @@ class Model:
 
     def __init__(self, pom: "POM"):
         """
-        Builds a Maven metadata model from the given POM.
+        Build a Maven metadata model from the given POM.
 
         :param pom: A source POM from which to extract metadata (e.g. dependencies).
         """
@@ -934,6 +1030,15 @@ class Model:
         _log.debug(f"{self.gav}: model construction complete")
 
     def dependencies(self, resolved: Dict[GACT, Dependency] = None) -> List[Dependency]:
+        """
+        Compute the component's list of dependencies, including transitive dependencies.
+
+        :param resolved:
+            Optional dictionary of already-resolved dependency coordinates.
+            Items present in this structure will be pruned from the
+            returned dependency list rather than recursively explored.
+        :return: The list of Dependency objects.
+        """
         deps: Dict[GACT, Dependency] = {}
 
         # Determine whether we are currently diving into transitive dependencies.
@@ -1108,19 +1213,42 @@ class Model:
 
 # -- Main --
 
-def _main(args):
+def main(args):
+    """Main entry point, for use as a standalone command line tool."""
     log_format = "[%(levelname)s] %(message)s"
     log_level = logging.DEBUG if "-d" in args else logging.INFO
     logging.basicConfig(format=log_format, level=log_level)
+
     env = Environment()
-    gavs = [arg for arg in args if ":" in arg]
-    for gav in gavs:
-        if len(gavs) > 1: print(f"\n[{gav}]")
-        g, a, v = gav.split(":")
-        model = Model(env.project(g, a).at_version(v).pom())
-        for dep in model.dependencies():
-            print(dep)
+
+    coords = [arg for arg in args if ":" in arg]
+    for coord in coords:
+        print(f"[{coord}]")
+        tokens = coord.split(":")
+
+        if len(tokens) == 2:
+            # Print information about this project (G:A).
+            g, a = tokens
+            metadata = env.project(g, a).metadata()
+            for field in (
+                "groupId", "artifactId", "lastUpdated",
+                "latest", "lastVersion", "release"
+            ):
+                print(f"{field} = {getattr(metadata, field)}")
+            snapshot_count = len(v for v in metadata.versions if v.endswith("-SNAPSHOT"))
+            release_count = len(metadata.versions) - snapshot_count
+            print(f"release version count = {release_count}")
+            print(f"snapshot version count = {snapshot_count}")
+
+        elif len(tokens) == 3:
+            # Print dependencies of this component (G:A:V).
+            g, a, v = tokens
+            model = Model(env.project(g, a).at_version(v).pom())
+            for dep in model.dependencies():
+                print(dep)
+
+        print()
 
 
 if __name__ == "__main__":
-    _main(sys.argv[1:])
+    main(sys.argv[1:])
