@@ -633,6 +633,14 @@ class Dependency:
         """The dependency's packaging/type."""
         return self.artifact.packaging
 
+    def set_groupId(self, version: str) -> None:
+        """
+        Alter the dependency's groupId.
+        :param version: The new groupId to use.
+        """
+        assert isinstance(groupId, str)
+        self.artifact.component.groupId = groupId
+
     def set_version(self, version: str) -> None:
         """
         Alter the dependency's version.
@@ -752,6 +760,11 @@ class POM(XML):
     def version(self) -> Optional[str]:
         """The POM's <version> (or <parent><version>) value."""
         return self.value("version") or self.value("parent/version")
+
+    @property
+    def name(self) -> Optional[str]:
+        """The POM's <name> value."""
+        return self.value("name")
 
     @property
     def description(self) -> Optional[str]:
@@ -1000,11 +1013,19 @@ class Model:
         # Replace ${...} expressions in property values.
         for k in self.props: Model._propvalue(k, self.props)
 
-        # Replace ${...} expressions in dependency version values.
+        # Replace ${...} expressions in dependency coordinate values.
         for dep in list(self.deps.values()) + list(self.dep_mgmt.values()):
+            # CTR START HERE --
+            # We need to interpolate into dep fields other than version.
+            # But changing GACT changes the dict key, which moves the
+            # dependency around... so maybe we need to interpolate it
+            # sooner? Look more closely at the order of logic here.
+            g = dep.groupId
+            a = dep.artifactId
             v = dep.version
-            if v is None: continue
-            dep.set_version(Model._evaluate(v, self.props))
+            if g is not None: dep.set_groupId(Model._evaluate(g, self.props))
+            if g is not None: dep.set_artifactId(Model._evaluate(g, self.props))
+            if v is not None: dep.set_version(Model._evaluate(v, self.props))
 
         # -- dependency management import --
         _log.debug(f"{self.gav}: dependency management import")
@@ -1118,7 +1139,7 @@ class Model:
 
     def _merge_props(self, source: Dict[str, str]) -> None:
         for k, v in source.items():
-            if k not in self.props: self.props[k] = v
+            if v is not None and k not in self.props: self.props[k] = v
 
     def _merge(self, pom: POM) -> None:
         """
@@ -1128,6 +1149,16 @@ class Model:
         self._merge_deps(pom.dependencies())
         self._merge_deps(pom.dependencies(managed=True), managed=True)
         self._merge_props(pom.properties)
+
+        # Make an effort to populate Maven special properties.
+        # https://github.com/cko/predefined_maven_properties/blob/master/README.md
+        self._merge_props({
+            "project.groupId":     pom.groupId,
+            "project.artifactId":  pom.artifactId,
+            "project.version":     pom.version,
+            "project.name":        pom.name,
+            "project.description": pom.description,
+        })
 
     @staticmethod
     def _is_excluded(dep: Dependency, exclusions: Iterable[Project]):
@@ -1192,6 +1223,7 @@ class Model:
             if replacement is None:
                 # NB: Leave "${...}" expressions alone when property is absent.
                 # This matches Maven behavior, but it still makes me nervous.
+                if prop_reference.startswith("project.groupId"): raise ValueError(f"No replacement for {prop_reference}")
                 continue
             value = value.replace("${" + prop_reference + "}", replacement)
         return value
