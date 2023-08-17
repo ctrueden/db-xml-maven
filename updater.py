@@ -213,32 +213,24 @@ def main(args):
     print("Initializing FilesCollection...")
     fc = FilesCollection()
 
-    # Define the Maven artifact.
-    project = env.project("org.scijava", "scijava-common")
-    component = project.at_version("2.96.0")
-    #project = env.project("net.imagej", "imagej")
-    #component = project.at_version("2.14.0")
-    artifact = component.artifact()
-
-    #coords = [arg for arg in args if ":" in arg]
-    #for coord in coords:
-    #    print(f"Processing {coord}...")
-    #    tokens = coord.split(":")
-    #    g = tokens[0]
-    #    a = tokens[1]
-    #    project = env.project(g, a)
-    #    v = tokens[2] if len(tokens) > 2 else project.release
-    #    component = project.at_version(v)
-    #    fc.add_artifact(component.artifact())
-
-    print(f"Adding artifact {artifact}...")
-    fc.add_artifact(artifact)
+    # Process arguments.
+    coords = [arg for arg in args if ":" in arg]
+    for coord in coords:
+        print(f"Processing {coord}...")
+        tokens = coord.split(":")
+        g = tokens[0]
+        a = tokens[1]
+        project = env.project(g, a)
+        v = tokens[2] if len(tokens) > 2 else project.release
+        component = project.at_version(v)
+        artifact = component.artifact()
+        print(f"Adding artifact {artifact}...")
+        fc.add_artifact(artifact)
 
     print("Generating resultant XML...")
     xml = fc.generate_xml("template.xml")
-    print(xml)
-    #with open(f"db-{g}-{a}-{v}.xml", "w") as f:
-    #    f.write(xml)
+    with open(f"db-{g}-{a}-{v}.xml", "w") as f:
+        f.write(xml)
 
 
 if __name__ == "__main__":
