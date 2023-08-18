@@ -1262,7 +1262,7 @@ def main(args):
                 "latest", "lastVersion", "release"
             ):
                 print(f"{field} = {getattr(metadata, field)}")
-            snapshot_count = sum(1 for v in metadata.versions if v.endswith("-SNAPSHOT"))
+            snapshot_count = sum(v.endswith("-SNAPSHOT") for v in metadata.versions)
             release_count = len(metadata.versions) - snapshot_count
             print(f"release version count = {release_count}")
             print(f"snapshot version count = {snapshot_count}")
