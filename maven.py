@@ -633,14 +633,6 @@ class Dependency:
         """The dependency's packaging/type."""
         return self.artifact.packaging
 
-    def set_groupId(self, version: str) -> None:
-        """
-        Alter the dependency's groupId.
-        :param version: The new groupId to use.
-        """
-        assert isinstance(groupId, str)
-        self.artifact.component.groupId = groupId
-
     def set_version(self, version: str) -> None:
         """
         Alter the dependency's version.
@@ -918,15 +910,15 @@ class Metadatas(Metadata):
 
     @property
     def groupId(self) -> Optional[str]:
-        return self.metadatas[0].groupId
+        return self.metadatas[0].groupId if self.metadatas else None
 
     @property
     def artifactId(self) -> Optional[str]:
-        return self.metadatas[0].artifactId
+        return self.metadatas[0].artifactId if self.metadatas else None
 
     @property
     def lastUpdated(self) -> Optional[datetime]:
-        return self.metadatas[-1].lastUpdated
+        return self.metadatas[-1].lastUpdated if self.metadatas else None
 
     @property
     def latest(self) -> Optional[str]:
@@ -1020,11 +1012,11 @@ class Model:
             # But changing GACT changes the dict key, which moves the
             # dependency around... so maybe we need to interpolate it
             # sooner? Look more closely at the order of logic here.
-            g = dep.groupId
-            a = dep.artifactId
+            #g = dep.groupId
+            #a = dep.artifactId
             v = dep.version
-            if g is not None: dep.set_groupId(Model._evaluate(g, self.props))
-            if g is not None: dep.set_artifactId(Model._evaluate(g, self.props))
+            #if g is not None: dep.set_groupId(Model._evaluate(g, self.props))
+            #if g is not None: dep.set_artifactId(Model._evaluate(g, self.props))
             if v is not None: dep.set_version(Model._evaluate(v, self.props))
 
         # -- dependency management import --
@@ -1264,13 +1256,13 @@ def main(args):
         if len(tokens) == 2:
             # Print information about this project (G:A).
             g, a = tokens
-            metadata = env.project(g, a).metadata()
+            metadata = env.project(g, a).metadata
             for field in (
                 "groupId", "artifactId", "lastUpdated",
                 "latest", "lastVersion", "release"
             ):
                 print(f"{field} = {getattr(metadata, field)}")
-            snapshot_count = len(v for v in metadata.versions if v.endswith("-SNAPSHOT"))
+            snapshot_count = sum(1 for v in metadata.versions if v.endswith("-SNAPSHOT"))
             release_count = len(metadata.versions) - snapshot_count
             print(f"release version count = {release_count}")
             print(f"snapshot version count = {snapshot_count}")
