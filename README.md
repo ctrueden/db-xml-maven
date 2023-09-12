@@ -232,7 +232,7 @@ Once the Maven-to-`db.xml` generator is robust enough, we then need to enhance t
 
 1. As described above, the Maven-driven generator will make *one db.xml.gz per release version*.
 
-2. To support smoother upgrading of major Java versions over time, the `db.xml` schema must gain a new "minimum Java version" field, which will enable the Updater to know, for every version of a project/site, what version of Java is needed in order to use it. The `Maven-to-`db.xml` generator can be enhanced quite easily to embed this minimum Java version into the `db.xml` files it generates.
+2. To support smoother upgrading of major Java versions over time, the `db.xml` schema must gain a new "minimum Java version" field, which will enable the Updater to know, for every version of a project/site, what version of Java is needed in order to use it. The Maven-to-`db.xml` generator can be enhanced quite easily to embed this minimum Java version into the `db.xml` files it generates.
 
 3. The Updater needs to check the currently running version of Java, and refuse to update if it is older than the needed minimum for the currently enabled update sites.
 
