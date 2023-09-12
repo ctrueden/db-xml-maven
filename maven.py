@@ -18,7 +18,6 @@ from xml.etree import ElementTree
 
 import requests
 
-import iogo
 
 # -- Constants --
 
@@ -82,6 +81,19 @@ def coord2str(
     if scope: s += f":{scope}"
     if optional: s += " (optional)"
     return s
+
+
+def read(p: Path, mode: str) -> Union[str, bytes]:
+    with open(p, mode) as f:
+        return f.read()
+
+
+def text(p: Path) -> str:
+    return read(p, "r")
+
+
+def binary(p: Path) -> bytes:
+    return read(p, "rb")
 
 
 # -- Classes --
@@ -579,7 +591,7 @@ class Artifact:
     def _checksum(self, suffix, func):
         p = self.resolve()
         checksum_path = p.parent / f"{p.name}.{suffix}"
-        return iogo.text(checksum_path) or func(iogo.binary(p)).hexdigest()
+        return text(checksum_path) or func(binary(p)).hexdigest()
 
 
 class Dependency:
