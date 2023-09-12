@@ -161,6 +161,7 @@ class FilesCollection:
             # <dependency> tags
             model = Model(pom)
             for dep in model.dependencies():
+                if dep.scope not in ("compile", "runtime"): continue
                 dependency = etree.SubElement(version, "dependency")
                 dependency.set("filename", f"jars/{dep.artifact.filename}")
                 dependency.set("timestamp", timestamp(dep.artifact.resolve()))
